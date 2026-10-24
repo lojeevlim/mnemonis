@@ -1,0 +1,7 @@
+@import "tailwindcss";
+@import "lojee-ui/theme.css";
+
+body {
+  margin: 0;
+  background: var(--lojee-surface);
+}

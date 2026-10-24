@@ -7,7 +7,7 @@ import { AppRoutes } from "./router";
 
 export function App() {
   return (
-    <ThemeProvider mode="light" accent="#000000">
+    <ThemeProvider mode="light" accent="#000000" design="bento">
       <ErrorBoundary>
         <ToastProvider>
           <AuthContextProvider>

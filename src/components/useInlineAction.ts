@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { useAction } from "../../components/hooks";
-import { useWorkspace } from "../../stores/workspaceStore";
+import { useAction } from "./hooks";
+import { useWorkspace } from "../stores/workspaceStore";
 
 /**
  * Like useAction, but moves a DomainError message out of the global store alert

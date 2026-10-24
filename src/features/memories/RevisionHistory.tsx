@@ -8,6 +8,7 @@ import {
   type WorkspaceState,
 } from "../../domain";
 import { useAction } from "../../components/hooks";
+import { OriginBadge } from "../../components/OriginBadge";
 import { FieldDiff } from "../../components/FieldDiff";
 import { MarkdownView } from "../../components/MarkdownView";
 import { formatDateTime, typeLabel } from "../../components/memoryMeta";
@@ -29,7 +30,7 @@ function RevisionDetails({ state, rev, mode }: { state: WorkspaceState; rev: Rev
     );
   }
   if (!rev.parentRevisionId) return <p className="text-xs text-fg-muted">First revision: nothing to compare against.</p>;
-  return <FieldDiff changes={diffRevisions(state, rev.parentRevisionId, rev.id)} />;
+  return <FieldDiff changes={diffRevisions(state, rev.parentRevisionId, rev.id)} collections={state.collections} />;
 }
 
 export function RevisionHistory({ state, memory }: { state: WorkspaceState; memory: Memory }) {
@@ -41,27 +42,23 @@ export function RevisionHistory({ state, memory }: { state: WorkspaceState; memo
   const toggle = (id: string, mode: "view" | "diff") =>
     setOpen((o) => ({ ...o, [id]: o[id] === mode ? undefined : mode }));
 
+  if (history.length === 0) return <p className="text-sm text-fg-muted">No saved versions yet.</p>;
+
   return (
     <ol className="space-y-2" aria-label="Revision history">
       {history.map((rev, i) => {
-        const commit = rev.commitId ? state.commits[rev.commitId] : undefined;
         const mode = open[rev.id];
         return (
           <li key={rev.id} className="rounded-md border border-border p-2">
             <div className="flex flex-wrap items-center gap-2 text-sm">
               <span className="font-medium">{i === 0 ? "Current" : `Revision ${history.length - i}`}</span>
-              {rev.commitId ? (
-                <Badge variant="soft" size="xs" color="emerald">
-                  Saved
-                </Badge>
-              ) : (
-                <Badge variant="soft" size="xs" color="amber">
-                  Draft
-                </Badge>
-              )}
+              <Badge variant="soft" size="xs" color="emerald">
+                Saved
+              </Badge>
+              <OriginBadge origin={rev.origin} />
               <span className="text-xs text-fg-muted">
-                {commit ? `“${commit.message}” · ` : ""}
-                {rev.author} · {formatDateTime(rev.createdAt)}
+                {rev.note ? `“${rev.note}” · ` : ""}
+                {rev.author} · {formatDateTime(rev.savedAt ?? rev.createdAt)}
               </span>
               <span className="ml-auto flex gap-1">
                 <Button size="xs" variant="ghost" onClick={() => toggle(rev.id, "view")} aria-expanded={mode === "view"}>
@@ -79,7 +76,7 @@ export function RevisionHistory({ state, memory }: { state: WorkspaceState; memo
                   variant="outline"
                   disabled={i === 0}
                   onClick={() =>
-                    void act(() => rollback(memory.id, rev.id), "Rolled back as a new draft revision")
+                    void act(() => rollback(memory.id, rev.id), "Rolled back")
                   }
                 >
                   <span aria-hidden="true">Roll back</span>

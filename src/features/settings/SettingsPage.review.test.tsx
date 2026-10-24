@@ -3,6 +3,7 @@ import { MemoryRouter } from "react-router-dom";
 import { ToastProvider } from "../../components/ToastProvider";
 import { CORRUPT_BACKUP_KEY } from "../../data/localRepository";
 import { MAX_IMPORT_BYTES } from "../../domain";
+import v1Drafts from "../../domain/__fixtures__/v1-drafts.json";
 import { useWorkspace } from "../../stores/workspaceStore";
 import { resetWorkspace, seedLocalProfile } from "../../test/helpers";
 import { AuthContextProvider } from "../auth/AuthContext";
@@ -43,6 +44,15 @@ describe("Settings review fixes", () => {
     expect(() => previewImport(JSON.stringify(bad), "bad.json")).toThrow(/corrupt/);
     expect(() => previewImport('{"schemaVersion":1,"__proto__":{"x":1}}', "p.json")).toThrow(/Import failed/);
     expect(() => previewImport(" ".repeat(MAX_IMPORT_BYTES + 1), "big.json")).toThrow(/too large/);
+  });
+
+  it("previews an older (v1) export by migrating it, counting saved changes and Inbox items", () => {
+    const p = previewImport(JSON.stringify(v1Drafts), "old.json");
+    expect(p.memories).toBeGreaterThan(0);
+    expect(p.saves).toBeGreaterThan(0);
+    expect(p.pending).toBeGreaterThan(0); // main-timeline drafts become pending proposals
+    // wrapped in the old storage envelope too
+    expect(previewImport(JSON.stringify({ schemaVersion: 1, state: v1Drafts }), "env.json").memories).toBe(p.memories);
   });
 
   it("MINOR-10: version comes from the Vite define constant", () => {

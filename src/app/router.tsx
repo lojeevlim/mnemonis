@@ -1,13 +1,13 @@
 import type { ComponentType } from "react";
-import { Route, Routes } from "react-router-dom";
+import { Navigate, Route, Routes } from "react-router-dom";
 import { AppShell } from "./AppShell";
 import { NAV_ITEMS } from "./nav";
-import { AgentsPage } from "../features/agents/AgentsPage";
 import { SignInPage, SignUpPage } from "../features/auth/AuthPages";
 import { ProtectedRoute } from "../features/auth/ProtectedRoute";
-import { BranchesPage } from "../features/branches/BranchesPage";
 import { CollectionsPage } from "../features/collections/CollectionsPage";
 import { GraphPage } from "../features/graph/GraphPage";
+import { HealthPage } from "../features/health/HealthPage";
+import { InboxPage } from "../features/inbox/InboxPage";
 import { McpPage } from "../features/mcp/McpPage";
 import { MemoriesPage } from "../features/memories/MemoriesPage";
 import { OverviewPage } from "../features/overview/OverviewPage";
@@ -18,8 +18,8 @@ const PAGES: Record<string, ComponentType> = {
   "/memories": MemoriesPage,
   "/graph": GraphPage,
   "/collections": CollectionsPage,
-  "/branches": BranchesPage,
-  "/agents": AgentsPage,
+  "/inbox": InboxPage,
+  "/health": HealthPage,
   "/mcp": McpPage,
   "/settings": SettingsPage,
 };
@@ -40,6 +40,9 @@ export function AppRoutes() {
           const Page = PAGES[item.path];
           return <Route key={item.path} path={item.path} element={<Page />} />;
         })}
+        {/* Old URLs (memory lines, Agents) keep working. */}
+        <Route path="/branches" element={<Navigate to="/inbox" replace />} />
+        <Route path="/agents" element={<Navigate to="/health" replace />} />
       </Route>
     </Routes>
   );

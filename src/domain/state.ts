@@ -1,21 +1,10 @@
-import { MEMORY_FIELDS, type MemoryFieldName, type WorkspaceState } from "./types";
+import { ORIGINS, RELATION_STATUSES, REVISION_STATUSES, type Relation, type WorkspaceState } from "./types";
 import { isJsonValue, isPlainObject, isReservedKey } from "./util";
 
-export const SCHEMA_VERSION = 1;
-export const MAIN_BRANCH_ID = "main";
+export const SCHEMA_VERSION = 2;
 
 export function createEmptyWorkspace(): WorkspaceState {
-  return {
-    schemaVersion: SCHEMA_VERSION,
-    currentBranchId: MAIN_BRANCH_ID,
-    memories: {},
-    revisions: {},
-    commits: {},
-    branches: { [MAIN_BRANCH_ID]: { id: MAIN_BRANCH_ID, name: "main", headCommitId: null, baseCommitId: null } },
-    relations: {},
-    collections: {},
-    pendingMerge: null,
-  };
+  return { schemaVersion: SCHEMA_VERSION, memories: {}, revisions: {}, relations: {}, collections: {} };
 }
 
 export type ValidationResult =
@@ -60,23 +49,6 @@ function validSnapshot(v: unknown): boolean {
   );
 }
 
-function validFieldValue(field: MemoryFieldName, v: unknown): boolean {
-  switch (field) {
-    case "title":
-    case "content":
-    case "type":
-      return isStr(v);
-    case "tags":
-      return isStrArray(v);
-    case "collectionId":
-      return isStrOrNull(v);
-    case "archived":
-      return typeof v === "boolean";
-    case "metadata":
-      return isPlainObject(v) && isJsonValue(v);
-  }
-}
-
 /** True when following `next` from any node revisits a node (cycle). Iterative, safe on bad data. */
 function hasCycle(ids: string[], next: (id: string) => string[]): boolean {
   const state = new Map<string, 1 | 2>(); // 1 = on stack, 2 = done
@@ -102,99 +74,107 @@ function hasCycle(ids: string[], next: (id: string) => string[]): boolean {
   return false;
 }
 
-const CHANGE_KINDS = ["create", "update", "archive", "restore"];
-const CHOICES = ["ours", "theirs", "manual"];
+/**
+ * Per memory: saved revisions form ONE linear chain (first has parent null, each next one's parent is the
+ * previous saved), and a pending revision's parent is the chain head (null when nothing is saved yet).
+ * Independent of key order.
+ */
+function validChains(revisions: [string, Rec][]): boolean {
+  const savedBy = new Map<string, Rec[]>();
+  const pendingBy = new Map<string, Rec>();
+  for (const [, r] of revisions) {
+    const mid = r.memoryId as string;
+    if (r.status === "saved") savedBy.set(mid, [...(savedBy.get(mid) ?? []), r]);
+    else if (r.status === "pending") pendingBy.set(mid, r);
+  }
+  const heads = new Map<string, string>();
+  for (const [mid, list] of savedBy) {
+    const ids = new Set(list.map((r) => r.id as string));
+    const used = new Set<string>();
+    const roots: Rec[] = [];
+    for (const r of list) {
+      const p = r.parentRevisionId as string | null;
+      if (p === null) roots.push(r);
+      else if (!ids.has(p) || used.has(p)) return false; // parent must be a saved sibling, used once
+      else used.add(p);
+    }
+    // One root + every parent link inside the set and used once + no cycles (checked globally) = a line.
+    if (roots.length !== 1) return false;
+    const tips = list.filter((r) => !used.has(r.id as string));
+    if (tips.length !== 1) return false;
+    heads.set(mid, tips[0].id as string);
+  }
+  for (const [mid, r] of pendingBy) {
+    if (r.parentRevisionId !== (heads.get(mid) ?? null)) return false;
+  }
+  return true;
+}
 
-function validate(raw: Rec): boolean {
+/** Validates (and returns the relations normalised: missing status => saved). null = invalid. */
+function validate(raw: Rec): Record<string, Relation> | null {
   const memories = entriesOf(raw.memories);
   const revisions = entriesOf(raw.revisions);
-  const commits = entriesOf(raw.commits);
-  const branches = entriesOf(raw.branches);
   const relations = entriesOf(raw.relations);
   const collections = entriesOf(raw.collections);
-  if (!memories || !revisions || !commits || !branches || !relations || !collections) return false;
+  if (!memories || !revisions || !relations || !collections) return null;
   const memMap = raw.memories as Rec;
   const revMap = raw.revisions as Rec;
-  const comMap = raw.commits as Rec;
-  const braMap = raw.branches as Rec;
-  if (!isStr(raw.currentBranchId) || !has(braMap, raw.currentBranchId)) return false;
 
   for (const [, m] of memories) {
     const p = m.provenance;
-    if (!isStr(m.createdAt) || !isStr(m.source)) return false;
-    if (!isPlainObject(p) || !isStr(p.origin) || !isStr(p.createdBy)) return false;
+    if (!isStr(m.createdAt) || !isStr(m.source)) return null;
+    if (!isPlainObject(p) || !isStr(p.origin) || !isStr(p.createdBy)) return null;
   }
   for (const [, c] of collections) {
-    if (!isStr(c.name) || !isStr(c.description) || !isStr(c.createdAt)) return false;
+    if (!isStr(c.name) || !isStr(c.description) || !isStr(c.createdAt)) return null;
   }
   for (const [, r] of relations) {
     const p = r.provenance;
-    if (!has(memMap, r.fromId) || !has(memMap, r.toId) || !isStr(r.label) || !isStr(r.createdAt)) return false;
-    if (!isPlainObject(p) || (p.origin !== "user" && p.origin !== "process") || !isStr(p.createdBy)) return false;
-    if (p.process !== undefined && !isStr(p.process)) return false;
-    if (p.demo !== undefined && typeof p.demo !== "boolean") return false;
+    if (!has(memMap, r.fromId) || !has(memMap, r.toId) || !isStr(r.label) || !isStr(r.createdAt)) return null;
+    if (!isPlainObject(p) || (p.origin !== "user" && p.origin !== "process") || !isStr(p.createdBy)) return null;
+    if (p.process !== undefined && !isStr(p.process)) return null;
+    if (p.demo !== undefined && typeof p.demo !== "boolean") return null;
+    if (r.status !== undefined && !(isStr(r.status) && (RELATION_STATUSES as readonly string[]).includes(r.status))) return null;
+    if (r.decidedAt !== undefined && !isStrOrNull(r.decidedAt)) return null;
   }
-  for (const [, c] of commits) {
-    if (!has(braMap, c.branchId) || !isStr(c.message) || !isStr(c.author) || !isStr(c.timestamp)) return false;
-    if (!isStrArray(c.parentIds) || !c.parentIds.every((p) => has(comMap, p))) return false;
-    if (!Array.isArray(c.changes)) return false;
-    for (const ch of c.changes as unknown[]) {
-      if (!isPlainObject(ch) || !has(memMap, ch.memoryId) || !has(revMap, ch.revisionId)) return false;
-      if (!isStr(ch.kind) || !CHANGE_KINDS.includes(ch.kind)) return false;
-      if ((revMap[ch.revisionId as string] as Rec).memoryId !== ch.memoryId) return false;
-    }
-  }
-  if (hasCycle(commits.map(([id]) => id), (id) => (comMap[id] as Rec).parentIds as string[])) return false;
-  for (const [, b] of branches) {
-    if (!isStr(b.name)) return false;
-    for (const ref of [b.headCommitId, b.baseCommitId]) {
-      if (ref !== null && !has(comMap, ref)) return false;
-    }
-  }
+  const pendingMemories = new Set<string>();
   for (const [, r] of revisions) {
-    if (!has(memMap, r.memoryId) || !has(braMap, r.branchId) || !validSnapshot(r.snapshot)) return false;
-    if (!isStr(r.createdAt) || !isStr(r.author)) return false;
-    if (r.parentRevisionId !== null && !has(revMap, r.parentRevisionId)) return false;
-    if (r.parentRevisionId !== null && (revMap[r.parentRevisionId as string] as Rec).memoryId !== r.memoryId) return false;
-    if (r.commitId !== null && !has(comMap, r.commitId)) return false;
+    if (!has(memMap, r.memoryId) || !validSnapshot(r.snapshot)) return null;
+    if (!isStr(r.createdAt) || !isStr(r.author) || !isStr(r.note)) return null;
+    if (!isStr(r.origin) || !(ORIGINS as readonly string[]).includes(r.origin)) return null;
+    if (!isStr(r.status) || !(REVISION_STATUSES as readonly string[]).includes(r.status)) return null;
+    if (!isStrOrNull(r.savedAt) || !isStrOrNull(r.decidedAt)) return null;
+    if (r.status === "saved" && r.savedAt === null) return null;
+    if (r.parentRevisionId !== null && !has(revMap, r.parentRevisionId)) return null;
+    if (r.parentRevisionId !== null && (revMap[r.parentRevisionId as string] as Rec).memoryId !== r.memoryId) return null;
+    if (r.status === "pending") {
+      // Invariant: at most one pending revision per memory.
+      if (pendingMemories.has(r.memoryId as string)) return null;
+      pendingMemories.add(r.memoryId as string);
+    }
   }
   const parentOf = (id: string) => {
     const p = (revMap[id] as Rec).parentRevisionId;
     return isStr(p) ? [p] : [];
   };
-  if (hasCycle(revisions.map(([id]) => id), parentOf)) return false;
-
-  const pm = raw.pendingMerge;
-  if (pm !== null) {
-    if (!isPlainObject(pm)) return false;
-    if (!has(braMap, pm.sourceBranchId) || !has(braMap, pm.targetBranchId)) return false;
-    if (pm.baseCommitId !== null && !has(comMap, pm.baseCommitId)) return false;
-    if (!isStr(pm.message) || !isStr(pm.author) || !isPlainObject(pm.merged) || !Array.isArray(pm.conflicts)) return false;
-    for (const key of Object.keys(pm.merged)) {
-      if (isReservedKey(key) || !has(memMap, key) || !validSnapshot(pm.merged[key])) return false;
-    }
-    for (const c of pm.conflicts as unknown[]) {
-      if (!isPlainObject(c) || !isStr(c.id) || isReservedKey(c.id) || !isStr(c.memoryId)) return false;
-      if (!Object.hasOwn(pm.merged, c.memoryId)) return false;
-      if (!isStr(c.field) || !(MEMORY_FIELDS as readonly string[]).includes(c.field)) return false;
-      const field = c.field as MemoryFieldName;
-      if (!validFieldValue(field, c.ours) || !validFieldValue(field, c.theirs)) return false;
-      if (c.base !== undefined && !validFieldValue(field, c.base)) return false;
-      const res = c.resolution;
-      if (res !== null) {
-        if (!isPlainObject(res) || !isStr(res.choice) || !CHOICES.includes(res.choice) || !validFieldValue(field, res.value)) {
-          return false;
-        }
-      }
-    }
+  if (hasCycle(revisions.map(([id]) => id), parentOf)) return null;
+  if (!validChains(revisions)) return null;
+  const out: Record<string, Relation> = {};
+  for (const [id, r] of relations) {
+    const status = r.status === undefined ? "saved" : r.status;
+    out[id] = {
+      ...(r as unknown as Relation),
+      status: status as Relation["status"],
+      decidedAt: r.decidedAt === undefined ? (status === "saved" ? (r.createdAt as string) : null) : (r.decidedAt as string | null),
+    };
   }
-  return true;
+  return out;
 }
 
 /**
  * Deep structural + referential validation of untrusted (localStorage / imported) data:
  * field types, id === map key, reserved keys, dangling references and cycles in
- * commit parents / revision parents. Historic revisions may legitimately reference a
+ * revision parents. Historic revisions may legitimately reference a
  * collection that was later deleted, so snapshot.collectionId is type-checked only.
  */
 export function validateWorkspaceState(raw: unknown): ValidationResult {
@@ -202,10 +182,20 @@ export function validateWorkspaceState(raw: unknown): ValidationResult {
   if (raw.schemaVersion !== SCHEMA_VERSION) {
     return { ok: false, reason: typeof raw.schemaVersion === "number" ? "version-mismatch" : "corrupt" };
   }
+  let relations: Record<string, Relation> | null;
   try {
-    if (!validate(raw)) return CORRUPT;
+    relations = validate(raw);
   } catch {
     return CORRUPT;
   }
-  return { ok: true, state: raw as unknown as WorkspaceState };
+  if (!relations) return CORRUPT;
+  return { ok: true, state: { ...(raw as unknown as WorkspaceState), relations } };
+}
+
+/**
+ * Number of SAVED revisions with origin "agent" in a (validated) state. The validator deliberately does not
+ * constrain revision origin, so an import may carry them; a UI can surface this count in an import preview.
+ */
+export function savedAgentOriginCount(state: WorkspaceState): number {
+  return Object.values(state.revisions).filter((r) => r.status === "saved" && r.origin === "agent").length;
 }

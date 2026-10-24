@@ -9,6 +9,8 @@ export interface SearchOptions {
   tag?: string;
   /** Archived memories are hidden when no status filter is given, unless this is true. */
   includeArchived?: boolean;
+  /** Also search memories that have no saved version yet (new proposals awaiting review). */
+  includePending?: boolean;
   limit?: number;
   offset?: number;
 }
@@ -148,10 +150,7 @@ export function searchMemories(memories: Memory[], opts: SearchOptions = {}): Se
   return { items: hits.slice(offset, offset + limit), total: hits.length, limit, offset };
 }
 
-/** Searches the memories visible on a branch (default: current). */
-export function searchWorkspace(
-  state: WorkspaceState,
-  opts: SearchOptions & { branchId?: string } = {},
-): SearchResult {
-  return searchMemories(listMemories(state, opts.branchId ?? state.currentBranchId), opts);
+/** Searches the memories in the workspace. */
+export function searchWorkspace(state: WorkspaceState, opts: SearchOptions = {}): SearchResult {
+  return searchMemories(listMemories(state, { includePending: opts.includePending }), opts);
 }

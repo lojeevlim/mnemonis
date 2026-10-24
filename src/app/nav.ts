@@ -10,8 +10,8 @@ export const NAV_ITEMS: NavItem[] = [
   { label: "Memories", path: "/memories", icon: "book-open" },
   { label: "Knowledge Graph", path: "/graph", icon: "share-2" },
   { label: "Collections", path: "/collections", icon: "folder" },
-  { label: "Branches & Versions", path: "/branches", icon: "git-branch" },
-  { label: "Agents", path: "/agents", icon: "sparkles" },
+  { label: "Inbox", path: "/inbox", icon: "inbox" },
+  { label: "Memory Health", path: "/health", icon: "activity" },
   { label: "MCP Connections", path: "/mcp", icon: "link" },
   { label: "Settings", path: "/settings", icon: "settings" },
 ];

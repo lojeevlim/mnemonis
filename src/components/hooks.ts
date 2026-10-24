@@ -12,7 +12,7 @@ export function useDebounced<T>(value: T, ms = 200): T {
   return v;
 }
 
-/** Memories of the current branch (memoized; zustand v5 forbids fresh arrays from selectors). */
+/** Saved memories (memoized; zustand v5 forbids fresh arrays from selectors). */
 export function useMemories(): Memory[] {
   const state = useWorkspace((s) => s.state);
   return useMemo(() => (state ? listMemories(state) : []), [state]);

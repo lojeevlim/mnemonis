@@ -1,19 +1,20 @@
 import type {
-  Branch,
+  Actor,
   Collection,
-  Commit,
   CreateMemoryInput,
   Memory,
-  MemoryFieldValue,
   MemoryPatch,
-  MergeResult,
   Mutation,
+  Revision,
   Relation,
   RelationProvenance,
+  ApproveAllResult,
+  BulkFilter,
+  RejectAllResult,
   WorkspaceState,
 } from "../domain";
 
-export type LoadIssue = "missing" | "corrupt" | "version-mismatch" | "storage-unavailable";
+export type LoadIssue = "missing" | "corrupt" | "version-mismatch" | "storage-unavailable" | "unauthorized";
 
 export interface RepositoryStatus {
   /** Why the last load fell back to a fresh/seed workspace (null = loaded persisted data). */
@@ -38,26 +39,46 @@ export interface MemoryRepository {
   /** Reset to the demo seed (default) or an empty workspace. */
   reset(opts?: { seed?: boolean }): Promise<WorkspaceState>;
   getStatus(): RepositoryStatus;
+  /**
+   * Optional (server-backed repositories): re-read the source of truth. Resolves the new state when it changed
+   * since the last read, null when unchanged. Serialized with mutations.
+   */
+  refresh?(): Promise<WorkspaceState | null>;
 
+  /**
+   * Memory writes take an `actor`: a user's write is saved at once, an agent's write becomes a pending
+   * proposal waiting in the Inbox (short term memory).
+   */
   createMemory(input: CreateMemoryInput): Promise<Mutation<Memory>>;
-  updateMemory(args: { id: string; patch: MemoryPatch; author: string; branchId?: string }): Promise<Mutation<Memory>>;
-  archiveMemory(args: { id: string; author: string; branchId?: string }): Promise<Mutation<Memory>>;
-  restoreMemory(args: { id: string; author: string; branchId?: string }): Promise<Mutation<Memory>>;
-  rollbackMemory(args: { memoryId: string; toRevisionId: string; author: string; branchId?: string }): Promise<Mutation<Memory>>;
+  updateMemory(args: { id: string; patch: MemoryPatch; actor: Actor }): Promise<Mutation<Memory>>;
+  archiveMemory(args: { id: string; actor: Actor }): Promise<Mutation<Memory>>;
+  restoreMemory(args: { id: string; actor: Actor }): Promise<Mutation<Memory>>;
+  rollbackMemory(args: { memoryId: string; toRevisionId: string; actor: Actor }): Promise<Mutation<Memory>>;
 
-  addRelation(args: { fromId: string; toId: string; label: string; provenance: RelationProvenance }): Promise<Mutation<Relation>>;
-  removeRelation(args: { id: string }): Promise<Mutation>;
+  /** A user's link is saved at once; an agent's link is pending until a user approves it. */
+  addRelation(args: {
+    fromId: string;
+    toId: string;
+    label: string;
+    provenance: RelationProvenance;
+    actor: Actor;
+  }): Promise<Mutation<Relation>>;
+  /** User only (an agent actor is refused with "forbidden"). Saved links are deleted; pending/rejected ones are kept as rejected. */
+  removeRelation(args: { id: string; actor: Actor }): Promise<Mutation>;
 
   createCollection(args: { name: string; description?: string }): Promise<Mutation<Collection>>;
   updateCollection(args: { id: string; name?: string; description?: string }): Promise<Mutation<Collection>>;
   deleteCollection(args: { id: string }): Promise<Mutation>;
 
-  commit(args: { message: string; author: string; branchId?: string }): Promise<Mutation<Commit>>;
-  createBranch(args: { name: string; fromCommitId?: string | null; switchTo?: boolean }): Promise<Mutation<Branch>>;
-  switchBranch(args: { branchId: string }): Promise<Mutation>;
-
-  merge(args: { sourceBranchId: string; targetBranchId?: string; author: string; message?: string }): Promise<Mutation<MergeResult>>;
-  resolveConflict(args: { conflictId: string; choice: "ours" | "theirs" | "manual"; value?: MemoryFieldValue }): Promise<Mutation>;
-  completeMerge(): Promise<Mutation<Commit>>;
-  abortMerge(): Promise<Mutation>;
+  /** Review decisions are user-only (the domain refuses agent actors). */
+  approve(args: { revisionId: string; actor: Actor }): Promise<Mutation<Revision>>;
+  reject(args: { revisionId: string; actor: Actor }): Promise<Mutation<Revision>>;
+  approveRelation(args: { relationId: string; actor: Actor }): Promise<Mutation<Relation>>;
+  rejectRelation(args: { relationId: string; actor: Actor }): Promise<Mutation<Relation>>;
+  /** Cover pending memory proposals AND pending relations (optionally only the given ids). Value = approved/rejected revision ids. */
+  approveAll(args: { actor: Actor } & BulkFilter): Promise<Mutation<string[]>>;
+  rejectAll(args: { actor: Actor } & BulkFilter): Promise<Mutation<string[]>>;
+  /** Same, reporting approved/rejected links and (for approve) the links skipped because they cannot be approved. */
+  approveAllDetailed(args: { actor: Actor } & BulkFilter): Promise<Mutation<ApproveAllResult>>;
+  rejectAllDetailed(args: { actor: Actor } & BulkFilter): Promise<Mutation<RejectAllResult>>;
 }

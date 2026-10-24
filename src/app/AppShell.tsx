@@ -1,16 +1,14 @@
 import { useEffect, useState } from "react";
-import { Outlet, useNavigate } from "react-router-dom";
+import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import {
   App as Layout,
   AppMain,
   AppSide,
-  AppSideToggle,
   AppTop,
   Badge,
   CommandMenu,
   Sidebar,
-  SidebarHeader,
-  ThemeSwitcher,
+  SidebarMenuItem,
   UserMenu,
   useAppLayout,
   Navbar,
@@ -18,6 +16,8 @@ import {
   UserMenuItem,
 } from "lojee-ui";
 import { NAV_ITEMS } from "./nav";
+import { pendingCount } from "../domain";
+import { useWorkspace } from "../stores/workspaceStore";
 import { useAuth } from "../features/auth/AuthContext";
 import { WorkspaceGate } from "./WorkspaceGate";
 
@@ -28,20 +28,46 @@ interface UserMenuItemExtend extends UserMenuItem {
 
 function SideNav() {
   const navigate = useNavigate();
+  const { pathname } = useLocation();
   const { setSideOpen } = useAppLayout();
+  const [collapsed, setCollapsed] = useState(false);
+  // A number (not the derived array) so the selector result is stable between renders.
+  const waiting = useWorkspace((s) => (s.state ? pendingCount(s.state) : 0));
   return (
-    <Sidebar
-      collapsible
-      variant="light"
-      items={NAV_ITEMS.map(({ label, icon, path }) => ({ label, icon, path }))}
-      onNavigate={(path) => {
-        navigate(path);
-        setSideOpen(false);
-      }}
-    >
-      {/* <SidebarHeader>
-        <span>Mnemonis</span>
-      </SidebarHeader> */}
+    <Sidebar collapsible variant="light" collapsed={collapsed} onCollapsedChange={setCollapsed}>
+      {NAV_ITEMS.map(({ label, icon, path }) => (
+        <SidebarMenuItem
+          key={path}
+          icon={icon}
+          collapsed={collapsed}
+          active={path === "/" ? pathname === "/" : pathname === path || pathname.startsWith(`${path}/`)}
+          onClick={() => {
+            navigate(path);
+            setSideOpen(false);
+          }}
+        >
+          {label}
+          {path === "/inbox" && waiting > 0 && collapsed && (
+            <>
+              <span
+                aria-hidden="true"
+                data-testid="inbox-dot"
+                className="absolute right-1 top-1 inline-flex h-2 w-2 rounded-full bg-amber-400"
+              />
+              {" "}
+              <span className="sr-only">{waiting} waiting for review</span>
+            </>
+          )}
+          {path === "/inbox" && waiting > 0 && !collapsed && (
+            <span data-testid="inbox-badge" className="ml-2 inline-flex">
+              <Badge variant="soft" color="amber" size="xs">
+                {waiting}
+              </Badge>
+              <span className="sr-only"> waiting for review</span>
+            </span>
+          )}
+        </SidebarMenuItem>
+      ))}
     </Sidebar>
   );
 }
@@ -49,7 +75,7 @@ function SideNav() {
 export function AppShell() {
   const navigate = useNavigate();
   const [menuOpen, setMenuOpen] = useState(false);
-  const { user, signOut } = useAuth();
+  const { signOut } = useAuth();
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -159,7 +185,7 @@ export function AppShell() {
             />
           }
         >
-        </Navbar>---
+        </Navbar>
       </AppTop>
       <AppSide>
         <SideNav />

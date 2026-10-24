@@ -5,55 +5,55 @@ import { PageHeader } from "../../components/PageHeader";
 import { useMemories } from "../../components/hooks";
 import { formatDateTime } from "../../components/memoryMeta";
 import { useToast } from "../../components/ToastProvider";
-import { pendingChanges } from "../../domain";
+import { listRelations, pendingCount } from "../../domain";
 import { useWorkspace } from "../../stores/workspaceStore";
-import { InlineError } from "../branches/InlineError";
+import { InlineError } from "../../components/InlineError";
 import { applyProposal } from "./applyProposal";
 import { useRunLog } from "./runLog";
 import {
   DEFAULT_DUPLICATE_THRESHOLD,
   DEFAULT_STALE_DAYS,
-  runLibrarian,
-  runReviewer,
-  type AgentName,
+  runOrganize,
+  runReview,
+  type CheckName,
   type Confidence,
   type Proposal,
 } from "./workflows";
 
 type Status = "applied" | "dismissed";
 
-const AGENT_LABEL: Record<AgentName, string> = { librarian: "Librarian", reviewer: "Reviewer" };
+const CHECK_LABEL: Record<CheckName, string> = { organize: "Organize", review: "Review" };
 const CONFIDENCE_COLOR: Record<Confidence, "emerald" | "amber" | "slate"> = { high: "emerald", medium: "amber", low: "slate" };
 
 function ImplementedBadge() {
   return (
     <Badge variant="soft" color="emerald" size="sm" icon="check">
-      Implemented (deterministic)
+      Rule-based
     </Badge>
   );
 }
 function PlannedBadge() {
   return (
     <Badge variant="soft" color="violet" size="sm" icon="clock">
-      Future AI-powered
+      Planned
     </Badge>
   );
 }
 
-export function AgentsPage() {
+export function HealthPage() {
   const memories = useMemories();
   const state = useWorkspace((s) => s.state);
   const toast = useToast();
   const { runs, record } = useRunLog();
   const [staleDays, setStaleDays] = useState(String(DEFAULT_STALE_DAYS));
   const [proposals, setProposals] = useState<Proposal[]>([]);
-  const [lastAgent, setLastAgent] = useState<AgentName | null>(null);
+  const [lastCheck, setLastCheck] = useState<CheckName | null>(null);
   const [statuses, setStatuses] = useState<Record<string, Status>>({});
   const [error, setError] = useState<string | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
   const staleId = useId();
 
-  const pending = useMemo(() => (state ? pendingChanges(state).length : 0), [state]);
+  const pending = useMemo(() => (state ? pendingCount(state) : 0), [state]);
   const lastChange = useMemo(() => {
     if (!state) return null;
     const times = Object.values(state.revisions).map((r) => r.createdAt);
@@ -67,25 +67,25 @@ export function AgentsPage() {
 
   const input = () => ({
     memories,
-    relations: Object.values(state.relations),
+    relations: listRelations(state),
     collections: Object.values(state.collections).map((c) => ({ id: c.id, name: c.name })),
     now: Date.now(),
   });
 
-  const run = (agent: AgentName) => {
+  const run = (check: CheckName) => {
     const result =
-      agent === "librarian"
-        ? runLibrarian(input(), { duplicateThreshold: DEFAULT_DUPLICATE_THRESHOLD })
-        : runReviewer(input(), { staleDays: staleN });
+      check === "organize"
+        ? runOrganize(input(), { duplicateThreshold: DEFAULT_DUPLICATE_THRESHOLD })
+        : runReview(input(), { staleDays: staleN });
     setProposals(result);
-    setLastAgent(agent);
+    setLastCheck(check);
     setStatuses({});
     setError(null);
     record({
-      agent,
+      check,
       at: new Date().toISOString(),
       proposals: result.length,
-      note: agent === "reviewer" ? `stale after ${staleN} days` : `duplicate threshold ${Math.round(DEFAULT_DUPLICATE_THRESHOLD * 100)}%`,
+      note: check === "review" ? `stale after ${staleN} days` : `duplicate threshold ${Math.round(DEFAULT_DUPLICATE_THRESHOLD * 100)}%`,
     });
   };
 
@@ -101,7 +101,7 @@ export function AgentsPage() {
       }
       setError(null);
       setStatuses((s) => ({ ...s, [p.id]: "applied" }));
-      toast("Draft created. Review it on Branches & Versions.", "success");
+      toast("Sent to Inbox. Approve or reject it there.", "success");
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -115,29 +115,29 @@ export function AgentsPage() {
   return (
     <div className="mx-auto max-w-6xl space-y-4 p-4">
       <PageHeader
-        title="Agents"
-        description="Agents propose changes; you review them. Nothing is saved as a version or deleted automatically."
+        title="Memory Health"
+        description="Checks look for housekeeping issues and propose fixes. Proposals you apply wait in your Inbox until you approve them; nothing is saved or deleted automatically."
       />
 
       <Alert variant="info" title="No AI runs here">
-        The Librarian and Reviewer are fixed, deterministic rules (text similarity and date checks) that run in your browser. They
+        Organize and Review are fixed, rule-based checks (text similarity and date checks) that run in your browser. They
         do not call any model and send nothing anywhere. Their findings can be wrong, so every proposal is reviewable.
       </Alert>
 
-      <section aria-label="Agents" className="grid gap-3 md:grid-cols-2">
-        <Card variant="outline" padding="sm" title="Librarian">
+      <section aria-label="Checks" className="grid gap-3 md:grid-cols-2">
+        <Card variant="outline" padding="sm" title="Organize">
           <div className="space-y-3">
             <ImplementedBadge />
             <p className="text-sm text-fg-muted">
               Finds duplicate and near-duplicate memories, missing metadata (tags, collection, content, source) and isolated memories.
             </p>
-            <Button size="sm" icon="play" onClick={() => run("librarian")}>
-              Run Librarian
+            <Button size="sm" icon="play" onClick={() => run("organize")}>
+              Run Organize
             </Button>
           </div>
         </Card>
 
-        <Card variant="outline" padding="sm" title="Reviewer">
+        <Card variant="outline" padding="sm" title="Review">
           <div className="space-y-3">
             <ImplementedBadge />
             <p className="text-sm text-fg-muted">
@@ -159,8 +159,8 @@ export function AgentsPage() {
                   className="w-28"
                 />
               </div>
-              <Button size="sm" icon="play" disabled={!staleValid} onClick={() => run("reviewer")}>
-                Run Reviewer
+              <Button size="sm" icon="play" disabled={!staleValid} onClick={() => run("review")}>
+                Run Review
               </Button>
             </div>
           </div>
@@ -175,7 +175,7 @@ export function AgentsPage() {
               </Badge>
             </div>
             <p className="text-sm text-fg-muted">
-              Would gather and summarize new information into proposed memories. Requires a model and a server, so it cannot run yet.
+              A future AI agent that would gather and summarize new information into proposed memories for your Inbox. Requires a model and a server, so it cannot run yet.
             </p>
             <Button size="sm" icon="play" disabled>
               Run Researcher
@@ -183,7 +183,7 @@ export function AgentsPage() {
           </div>
         </Card>
 
-        <Card variant="outline" padding="sm" title="Sync Agent">
+        <Card variant="outline" padding="sm" title="Sync">
           <div className="space-y-3">
             <div className="flex flex-wrap gap-2">
               <PlannedBadge />
@@ -201,7 +201,7 @@ export function AgentsPage() {
                 <dd>{lastChange ? formatDateTime(lastChange) : "None yet"}</dd>
               </div>
               <div className="flex justify-between gap-3">
-                <dt className="text-fg-muted">Pending drafts</dt>
+                <dt className="text-fg-muted">Waiting for review</dt>
                 <dd>{pending}</dd>
               </div>
               <div className="flex justify-between gap-3">
@@ -210,7 +210,7 @@ export function AgentsPage() {
               </div>
             </dl>
             <Button size="sm" icon="refresh-cw" disabled>
-              Run Sync Agent
+              Run Sync
             </Button>
           </div>
         </Card>
@@ -219,9 +219,9 @@ export function AgentsPage() {
       <section aria-label="Proposals" className="space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-2">
           <h2 className="text-sm font-semibold">
-            Proposals{lastAgent ? ` from ${AGENT_LABEL[lastAgent]}` : ""}
+            Proposals{lastCheck ? ` from ${CHECK_LABEL[lastCheck]}` : ""}
           </h2>
-          {lastAgent && (
+          {lastCheck && (
             <span className="text-xs text-fg-muted">
               {open} open · {appliedCount} applied
             </span>
@@ -229,18 +229,17 @@ export function AgentsPage() {
         </div>
         <InlineError message={error} />
         {appliedCount > 0 && (
-          <Alert variant="success" title="Applied changes are drafts">
-            Nothing has been saved as a version. <Link className="underline" to="/branches">Review and save them as a version on Branches &amp; Versions</Link>.
-            Links are additive relations (not versioned) and can be removed from the Knowledge Graph.
+          <Alert variant="success" title="Sent to Inbox">
+            Nothing has been saved yet. <Link className="underline" to="/inbox">Review and approve the changes and links in your Inbox</Link>.
           </Alert>
         )}
-        {!lastAgent ? (
-          <EmptyState icon="sparkles" title="No run yet">
-            Run the Librarian or Reviewer to see proposed changes here.
+        {!lastCheck ? (
+          <EmptyState icon="activity" title="No run yet">
+            Run Organize or Review to see proposed changes here.
           </EmptyState>
         ) : proposals.length === 0 ? (
           <EmptyState icon="check" title="Nothing to propose">
-            {AGENT_LABEL[lastAgent]} found no issues in the current memories.
+            {CHECK_LABEL[lastCheck]} found no issues in the current memories.
           </EmptyState>
         ) : (
           <ul aria-label="Proposals list" className="space-y-2">
@@ -262,7 +261,7 @@ export function AgentsPage() {
                         )}
                         {status && (
                           <Badge variant="soft" size="sm" color={status === "applied" ? "emerald" : "slate"}>
-                            {status === "applied" ? "Applied as draft" : "Dismissed"}
+                            {status === "applied" ? "Sent to Inbox" : "Dismissed"}
                           </Badge>
                         )}
                       </div>
@@ -319,7 +318,7 @@ export function AgentsPage() {
             {runs.map((r) => (
               <li key={r.id} className="flex flex-wrap items-center justify-between gap-2 px-3 py-2">
                 <span>
-                  {AGENT_LABEL[r.agent]} <span className="text-xs text-fg-muted">({r.note})</span>
+                  {CHECK_LABEL[r.check]} <span className="text-xs text-fg-muted">({r.note})</span>
                 </span>
                 <span className="text-xs text-fg-muted">
                   {r.proposals} {r.proposals === 1 ? "proposal" : "proposals"} · {formatDateTime(r.at)}

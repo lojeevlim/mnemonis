@@ -27,7 +27,7 @@ export function CreateMemoryModal({ open, onClose, onCreated, defaultCollectionI
   const submit = async (v: MemoryFormValues) => {
     setBusy(true);
     try {
-      const { ok, value } = await act(() => createMemory(v), "Memory created as a draft");
+      const { ok, value } = await act(() => createMemory(v), "Memory created");
       if (ok && value) {
         onClose();
         onCreated?.(value.id);

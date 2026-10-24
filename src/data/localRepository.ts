@@ -1,23 +1,24 @@
 import {
-  abortMerge,
   addRelation,
+  approveAll,
+  approveAllDetailed,
+  approveRelation,
+  approveRevision,
   archiveMemory,
-  commitDrafts,
-  completeMerge,
-  createBranch,
   createCollection,
   createEmptyWorkspace,
   createMemory,
   deleteCollection,
-  mergeBranch,
+  migrateWorkspaceState,
+  rejectAll,
+  rejectAllDetailed,
+  rejectRelation,
+  rejectRevision,
   removeRelation,
-  resolveConflict,
   restoreMemory,
   rollbackMemory,
-  switchBranch,
   updateCollection,
   updateMemory,
-  validateWorkspaceState,
   MAX_IMPORT_BYTES,
   SCHEMA_VERSION,
   type DomainContext,
@@ -30,6 +31,10 @@ import type { LoadIssue, MemoryRepository, RepositoryStatus } from "./repository
 
 export const STORAGE_KEY = `mnemonis.workspace.v${SCHEMA_VERSION}`;
 export const CORRUPT_BACKUP_KEY = `${STORAGE_KEY}.corrupt`;
+/** Pre-refactor (branches / commits) storage key. Read once for migration; NEVER deleted by the app on load. */
+export const LEGACY_STORAGE_KEY = "mnemonis.workspace.v1";
+/** Separate backup slot for an unreadable legacy v1 payload (the v1 key itself is never modified). */
+export const LEGACY_CORRUPT_BACKUP_KEY = `${LEGACY_STORAGE_KEY}.corrupt`;
 
 export interface StorageLike {
   getItem(key: string): string | null;
@@ -46,7 +51,8 @@ export interface LocalRepositoryOptions {
 
 interface Envelope {
   schemaVersion: number;
-  state: WorkspaceState;
+  /** Untrusted until migrateWorkspaceState has validated it. */
+  state: unknown;
 }
 
 function defaultStorage(): StorageLike | null {
@@ -107,8 +113,9 @@ export class LocalRepository implements MemoryRepository {
     } catch {
       throw new Error("Import failed: not valid JSON");
     }
-    const candidate = (parsed as Partial<Envelope> | null)?.state ?? parsed;
-    const v = validateWorkspaceState(candidate);
+    // Accepts v1 or v2, wrapped in an export envelope or bare.
+    const wrapped = (parsed as Partial<Envelope> | null)?.state;
+    const v = migrateWorkspaceState(wrapped ?? parsed);
     if (!v.ok) throw new Error(`Import failed: ${v.reason}`);
     this.state = v.state;
     this.persist();
@@ -133,17 +140,20 @@ export class LocalRepository implements MemoryRepository {
   restoreMemory: MemoryRepository["restoreMemory"] = (a) => this.apply((s, c) => restoreMemory(s, c, a));
   rollbackMemory: MemoryRepository["rollbackMemory"] = (a) => this.apply((s, c) => rollbackMemory(s, c, a));
   addRelation: MemoryRepository["addRelation"] = (a) => this.apply((s, c) => addRelation(s, c, a));
-  removeRelation: MemoryRepository["removeRelation"] = (a) => this.apply((s) => removeRelation(s, a));
+  removeRelation: MemoryRepository["removeRelation"] = (a) => this.apply((s, c) => removeRelation(s, a, c));
   createCollection: MemoryRepository["createCollection"] = (a) => this.apply((s, c) => createCollection(s, c, a));
   updateCollection: MemoryRepository["updateCollection"] = (a) => this.apply((s) => updateCollection(s, a));
   deleteCollection: MemoryRepository["deleteCollection"] = (a) => this.apply((s) => deleteCollection(s, a));
-  commit: MemoryRepository["commit"] = (a) => this.apply((s, c) => commitDrafts(s, c, a));
-  createBranch: MemoryRepository["createBranch"] = (a) => this.apply((s, c) => createBranch(s, c, a));
-  switchBranch: MemoryRepository["switchBranch"] = (a) => this.apply((s) => switchBranch(s, a));
-  merge: MemoryRepository["merge"] = (a) => this.apply((s, c) => mergeBranch(s, c, a));
-  resolveConflict: MemoryRepository["resolveConflict"] = (a) => this.apply((s) => resolveConflict(s, a));
-  completeMerge: MemoryRepository["completeMerge"] = () => this.apply((s, c) => completeMerge(s, c));
-  abortMerge: MemoryRepository["abortMerge"] = () => this.apply((s) => abortMerge(s));
+  approve: MemoryRepository["approve"] = (a) => this.apply((s, c) => approveRevision(s, c, a));
+  reject: MemoryRepository["reject"] = (a) => this.apply((s, c) => rejectRevision(s, c, a));
+  approveRelation: MemoryRepository["approveRelation"] = (a) => this.apply((s, c) => approveRelation(s, c, a));
+  rejectRelation: MemoryRepository["rejectRelation"] = (a) => this.apply((s, c) => rejectRelation(s, c, a));
+  approveAll: MemoryRepository["approveAll"] = (a) => this.apply((s, c) => approveAll(s, c, a));
+  rejectAll: MemoryRepository["rejectAll"] = (a) => this.apply((s, c) => rejectAll(s, c, a));
+  approveAllDetailed: MemoryRepository["approveAllDetailed"] = (a) =>
+    this.apply((s, c) => approveAllDetailed(s, c, a));
+  rejectAllDetailed: MemoryRepository["rejectAllDetailed"] = (a) =>
+    this.apply((s, c) => rejectAllDetailed(s, c, a));
 
   // ---- internals ---------------------------------------------------------
 
@@ -178,25 +188,66 @@ export class LocalRepository implements MemoryRepository {
     } catch {
       return { state: null, issue: "storage-unavailable" };
     }
-    if (raw === null) return { state: null, issue: "missing" };
+    if (raw === null) return this.readLegacy(this.storage, "missing");
     let issue: LoadIssue;
     try {
       const parsed = JSON.parse(raw) as Partial<Envelope> | null;
-      const v = validateWorkspaceState(parsed?.state);
+      const v = migrateWorkspaceState(parsed?.state);
       if (v.ok && parsed?.schemaVersion === SCHEMA_VERSION) return { state: v.state, issue: null };
       issue = v.ok ? "corrupt" : v.reason;
     } catch {
       issue = "corrupt";
     }
-    // Keep the unreadable payload so data is never silently destroyed. Single slot, FIRST backup
-    // wins: a later corrupt load never overwrites an earlier backup (the earliest unreadable
-    // payload is the likeliest to be recoverable). "Clear all local data" removes it.
+    this.backupCorrupt(this.storage, CORRUPT_BACKUP_KEY, raw);
+    // The v2 data is unreadable, but an intact legacy v1 copy may still exist: try it before the seed.
+    return this.readLegacy(this.storage, issue);
+  }
+
+  /**
+   * Look for the legacy v1 envelope, migrate it and persist it under the v2 key. The v1 key is left
+   * untouched (it is the user's only copy of their old data, and a rollback path). `fallbackIssue` is
+   * reported when nothing usable is found ("missing" when v2 was absent, else why v2 was unreadable).
+   */
+  private readLegacy(
+    storage: StorageLike,
+    fallbackIssue: LoadIssue,
+  ): { state: WorkspaceState | null; issue: LoadIssue | null } {
+    let legacy: string | null;
     try {
-      if (this.storage.getItem(CORRUPT_BACKUP_KEY) === null) this.storage.setItem(CORRUPT_BACKUP_KEY, raw);
+      legacy = storage.getItem(LEGACY_STORAGE_KEY);
+    } catch {
+      return { state: null, issue: fallbackIssue };
+    }
+    if (legacy === null) return { state: null, issue: fallbackIssue };
+    let issue: LoadIssue = "corrupt";
+    try {
+      const parsed = JSON.parse(legacy) as Partial<Envelope> | null;
+      const v = migrateWorkspaceState(parsed?.state);
+      if (v.ok && parsed?.schemaVersion === 1) {
+        this.state = v.state;
+        this.persist();
+        return { state: v.state, issue: null };
+      }
+      issue = v.ok ? "corrupt" : v.reason;
+    } catch {
+      /* unreadable legacy data: fall through */
+    }
+    // Keep a copy in its own slot (the v1 key itself is never touched), then start fresh.
+    this.backupCorrupt(storage, LEGACY_CORRUPT_BACKUP_KEY, legacy);
+    return { state: null, issue: fallbackIssue === "missing" ? issue : fallbackIssue };
+  }
+
+  /**
+   * Keep the unreadable payload so data is never silently destroyed. Single slot per source, FIRST backup
+   * wins: a later corrupt load never overwrites an earlier backup (the earliest unreadable
+   * payload is the likeliest to be recoverable). "Clear all local data" removes it.
+   */
+  private backupCorrupt(storage: StorageLike, backupKey: string, raw: string): void {
+    try {
+      if (storage.getItem(backupKey) === null) storage.setItem(backupKey, raw);
     } catch {
       /* ignore */
     }
-    return { state: null, issue };
   }
 
   private persist(): void {

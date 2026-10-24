@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from "react";
 import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
 import { Alert, Button, LoginForm, SignupForm } from "lojee-ui";
-import { InlineError } from "../branches/InlineError";
+import { InlineError } from "../../components/InlineError";
 import { useAuth } from "./AuthContext";
 
 function useReturnTo(): string {

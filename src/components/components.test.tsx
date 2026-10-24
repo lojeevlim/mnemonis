@@ -62,3 +62,106 @@ describe("markdown", () => {
     expect(screen.getByText("No content.")).toBeInTheDocument();
   });
 });
+
+describe("MarkdownView inline parsing", () => {
+  it("renders 200k '[' on one line quickly (linear, bounded)", () => {
+    const t0 = performance.now();
+    const { container } = render(<MarkdownView source={"[".repeat(200_000)} />);
+    expect(performance.now() - t0).toBeLessThan(250);
+    expect(container.querySelector("a")).toBeNull();
+  });
+
+  it("stays fast on many unterminated openers within the line cap", () => {
+    const t0 = performance.now();
+    render(<MarkdownView source={"[a](".repeat(2_400) + "`" + "*_".repeat(2_000)} />);
+    expect(performance.now() - t0).toBeLessThan(250);
+  });
+
+  it("keeps supported inline syntax", () => {
+    const { container } = render(
+      <MarkdownView source={"`c` **b** *i* _u_ [ok](https://example.com/x) snake_case_word **a _b_ c**"} />,
+    );
+    expect(container.querySelector("code")?.textContent).toBe("c");
+    expect(container.querySelectorAll("strong")).toHaveLength(2);
+    expect(container.querySelector("strong em")?.textContent).toBe("b");
+    expect(Array.from(container.querySelectorAll("em")).map((e) => e.textContent)).toEqual(["i", "u", "b"]);
+    const a = container.querySelector("a")!;
+    expect(a.getAttribute("href")).toBe("https://example.com/x");
+    expect(a.getAttribute("rel")).toBe("noopener noreferrer nofollow");
+    expect(container.textContent).toContain("snake_case_word");
+  });
+
+  it("leaves javascript: links unlinked", () => {
+    const { container } = render(<MarkdownView source="[x](javascript:alert(1)) and [y](data:text/html,hi)" />);
+    expect(container.querySelector("a")).toBeNull();
+    expect(container.textContent).toContain("[x](javascript:alert(1))");
+  });
+
+  it("reveals the real host when link text looks like a different URL", () => {
+    const { container } = render(<MarkdownView source="[https://bank.com](https://evil.tld/login)" />);
+    expect(container.querySelector("a")?.getAttribute("href")).toBe("https://evil.tld/login");
+    expect(container.textContent).toContain("evil.tld");
+  });
+
+  it("does not add a host hint for matching hosts or ordinary link text", () => {
+    const { container } = render(
+      <MarkdownView source="[https://example.com](https://www.example.com/a) [read more](https://evil.tld)" />,
+    );
+    expect(container.textContent).not.toContain("links to");
+  });
+
+  it("still reveals the real host when the URL-like label is wrapped in emphasis or code", () => {
+    for (const label of ["**paypal.com**", "`paypal.com`", "_paypal.com_", "*paypal.com*"]) {
+      const { container, unmount } = render(<MarkdownView source={`[${label}](https://evil.example)`} />);
+      expect(container.textContent).toContain("(links to evil.example)");
+      unmount();
+    }
+    const { container } = render(<MarkdownView source="[**example.com**](https://example.com)" />);
+    expect(container.textContent).not.toContain("links to");
+  });
+});
+
+describe("markdown block parser performance", () => {
+  const ws = " ".repeat(50_000);
+  const cases: [string, string][] = [
+    ["heading", "# a" + " ".repeat(5000) + "b"],
+    ["heading trailing", "# a" + ws + "#" + ws + "x"],
+    ["fence", "``` " + ws + "!"],
+    ["closing fence", "```\n" + "``` " + ws + "x"],
+    ["hr", "---" + ws + "x"],
+    ["hr dashes", "- ".repeat(25_000) + "x"],
+    ["ul", ws + "x"],
+    ["ul marker", "-" + ws + "x"],
+    ["ol", "1" + "0".repeat(50_000) + "x"],
+    ["ol marker", "1." + ws],
+    ["task", "- [x]" + ws + "y"],
+    ["quote", ">" + ws + "x"],
+    ["long line", "# " + "a".repeat(200_000)],
+  ];
+  for (const [name, src] of cases) {
+    it(`parses ${name} pathological input in < 100ms`, () => {
+      const t0 = performance.now();
+      parseMarkdown(src);
+      expect(performance.now() - t0).toBeLessThan(100);
+    });
+  }
+
+  it("treats lines over the cap as plain paragraph text", () => {
+    const long = "# " + "a".repeat(10_001);
+    expect(parseMarkdown(long)).toEqual([{ type: "paragraph", text: long }]);
+    expect(parseMarkdown("```\n" + long + "\n```")[0]).toMatchObject({ type: "code" });
+  });
+
+  it("keeps normal heading, fence, hr, list and task behaviour", () => {
+    expect(parseMarkdown("## Title ##")).toEqual([{ type: "heading", level: 2, text: "Title" }]);
+    expect(parseMarkdown("####### x")).toEqual([{ type: "paragraph", text: "####### x" }]);
+    expect(parseMarkdown("#nospace")).toEqual([{ type: "paragraph", text: "#nospace" }]);
+    expect(parseMarkdown("``` ts \nx\n```  ")).toEqual([{ type: "code", lang: "ts", text: "x" }]);
+    expect(parseMarkdown("- - -\n___")).toEqual([{ type: "hr" }, { type: "hr" }]);
+    expect(parseMarkdown("1) a\n2. b\n- [X] t")).toEqual([
+      { type: "list", ordered: true, items: [{ text: "a", checked: null }, { text: "b", checked: null }] },
+      { type: "list", ordered: false, items: [{ text: "t", checked: true }] },
+    ]);
+    expect(parseMarkdown("> a\n>b")).toEqual([{ type: "quote", text: "a\nb" }]);
+  });
+});

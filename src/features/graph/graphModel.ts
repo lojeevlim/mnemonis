@@ -36,7 +36,7 @@ export interface GraphFilters {
 }
 
 /**
- * Nodes = current-branch memories (archived ones only when `showArchived`).
+ * Nodes = saved memories (archived ones only when `showArchived`).
  * Edges = stored relations whose both endpoints are nodes.
  */
 export function buildGraph(state: WorkspaceState, opts: { showArchived?: boolean } = {}): Graph {

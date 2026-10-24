@@ -2,6 +2,7 @@ import { useMemo, useState, type FormEvent } from "react";
 import { Badge, Button, Input, Select } from "lojee-ui";
 import { listRelations, type Memory, type WorkspaceState } from "../../domain";
 import { useAction } from "../../components/hooks";
+import { isUnsaved } from "../../components/isUnsaved";
 import { useWorkspace } from "../../stores/workspaceStore";
 
 const DEFAULT_LABEL = "related to";
@@ -22,6 +23,13 @@ export function RelatedMemories({ state, memory, memories, onOpenMemory }: Props
 
   const titles = useMemo(() => new Map(memories.map((m) => [m.id, m.title])), [memories]);
   const relations = useMemo(() => listRelations(state, memory.id), [state, memory.id]);
+  // Never show a raw id: skip relations whose other endpoint has no known title.
+  const visible = useMemo(
+    () => relations.filter((r) => titles.has(r.fromId === memory.id ? r.toId : r.fromId)),
+    [relations, titles, memory.id],
+  );
+  // A memory that only exists as a proposal cannot be linked by the user until it is approved.
+  const unsaved = isUnsaved(state, memory);
   const candidates = memories.filter((m) => m.id !== memory.id && !m.archived);
 
   const add = async (e: FormEvent) => {
@@ -36,14 +44,14 @@ export function RelatedMemories({ state, memory, memories, onOpenMemory }: Props
 
   return (
     <div className="space-y-2">
-      {relations.length === 0 ? (
+      {visible.length === 0 ? (
         <p className="text-sm text-fg-muted">No related memories yet.</p>
       ) : (
         <ul className="space-y-1" aria-label="Related memories">
-          {relations.map((r) => {
+          {visible.map((r) => {
             const outgoing = r.fromId === memory.id;
             const otherId = outgoing ? r.toId : r.fromId;
-            const otherTitle = titles.get(otherId) ?? otherId;
+            const otherTitle = titles.get(otherId) as string;
             return (
               <li key={r.id} className="flex flex-wrap items-center gap-2 text-sm">
                 <span className="text-fg-subtle" aria-hidden="true">
@@ -78,7 +86,8 @@ export function RelatedMemories({ state, memory, memories, onOpenMemory }: Props
           })}
         </ul>
       )}
-      {candidates.length > 0 && (
+      {unsaved && <p className="text-xs text-fg-muted">Approve this memory before linking it to others.</p>}
+      {!unsaved && candidates.length > 0 && (
         <form onSubmit={(e) => void add(e)} className="flex flex-wrap items-center gap-2">
           <div className="min-w-40 flex-1">
             <Select

@@ -1,107 +1,29 @@
 import { DomainError } from "./context";
 import type {
-  Branch,
   ChangeKind,
-  Commit,
   Memory,
   MemorySnapshot,
+  Origin,
   Revision,
   WorkspaceState,
 } from "./types";
-import { deepEqual, safeGet } from "./util";
-
-/** memoryId -> revisionId */
-export type Tree = Record<string, string>;
+import { safeGet } from "./util";
 
 export interface PendingChange {
   memoryId: string;
   revisionId: string;
   kind: ChangeKind;
   title: string;
-}
-
-export function getBranch(state: WorkspaceState, branchId: string): Branch {
-  const b = safeGet(state.branches, branchId);
-  if (!b) throw new DomainError("branch_not_found", `Branch not found: ${branchId}`);
-  return b;
-}
-
-export function getCommit(state: WorkspaceState, commitId: string): Commit {
-  const c = safeGet(state.commits, commitId);
-  if (!c) throw new DomainError("commit_not_found", `Version not found: ${commitId}`);
-  return c;
+  author: string;
+  origin: Origin;
+  createdAt: string;
+  note: string;
 }
 
 export function getRevision(state: WorkspaceState, revisionId: string): Revision {
   const r = safeGet(state.revisions, revisionId);
   if (!r) throw new DomainError("revision_not_found", `Revision not found: ${revisionId}`);
   return r;
-}
-
-/** Reconstructs the memoryId -> revisionId map at a commit by replaying first-parent changes. */
-export function commitTree(state: WorkspaceState, commitId: string | null): Tree {
-  const chain: Commit[] = [];
-  let cur: string | null = commitId;
-  while (cur) {
-    const c = getCommit(state, cur);
-    chain.push(c);
-    cur = c.parentIds[0] ?? null;
-  }
-  // Null prototype: a (hostile) memory id such as "__proto__" becomes a plain own key.
-  const tree: Tree = Object.create(null) as Tree;
-  for (let i = chain.length - 1; i >= 0; i--) {
-    for (const ch of chain[i].changes) tree[ch.memoryId] = ch.revisionId;
-  }
-  return tree;
-}
-
-export function branchTree(state: WorkspaceState, branchId: string): Tree {
-  return commitTree(state, getBranch(state, branchId).headCommitId);
-}
-
-/** Full snapshot (memoryId -> MemorySnapshot) at a commit. */
-export function snapshotAtCommit(
-  state: WorkspaceState,
-  commitId: string | null,
-): Record<string, MemorySnapshot> {
-  const out: Record<string, MemorySnapshot> = {};
-  for (const [mid, rid] of Object.entries(commitTree(state, commitId))) {
-    out[mid] = getRevision(state, rid).snapshot;
-  }
-  return out;
-}
-
-/**
- * Latest uncommitted revision per memory on a branch (insertion order = append order).
- * A draft only counts when its chain of drafts is rooted at the memory's CURRENT branch-tree
- * revision. Drafts left over from before the tree moved (e.g. a no-op draft that survived a
- * merge) are stale and ignored, so they can never shadow or revert newer committed content.
- */
-export function pendingRevisionMap(
-  state: WorkspaceState,
-  branchId: string,
-): Record<string, Revision> {
-  const tree = branchTree(state, branchId);
-  const out: Record<string, Revision> = {};
-  for (const r of Object.values(state.revisions)) {
-    if (r.commitId !== null || r.branchId !== branchId) continue;
-    if (draftBase(state, r) !== (safeGet(tree, r.memoryId) ?? null)) continue;
-    out[r.memoryId] = r;
-  }
-  return out;
-}
-
-/** The non-draft revision id (or null) that a draft chain is based on. */
-function draftBase(state: WorkspaceState, draft: Revision): string | null {
-  const seen = new Set<string>([draft.id]);
-  let cur = draft;
-  while (cur.parentRevisionId !== null) {
-    const parent = safeGet(state.revisions, cur.parentRevisionId);
-    if (!parent || parent.commitId !== null || parent.branchId !== draft.branchId || seen.has(parent.id)) break;
-    seen.add(parent.id);
-    cur = parent;
-  }
-  return cur.parentRevisionId;
 }
 
 export function changeKind(before: MemorySnapshot | undefined, after: MemorySnapshot): ChangeKind {
@@ -111,156 +33,220 @@ export function changeKind(before: MemorySnapshot | undefined, after: MemorySnap
   return "update";
 }
 
-/** Drafts whose content actually differs from the committed state of the branch. */
-export function pendingChanges(
-  state: WorkspaceState,
-  branchId: string = state.currentBranchId,
-): PendingChange[] {
-  const tree = branchTree(state, branchId);
+interface RevisionIndex {
+  /** memoryId -> current saved revision (head of its saved chain). */
+  saved: Map<string, Revision>;
+  /** memoryId -> its (single) pending revision. */
+  pending: Map<string, Revision>;
+}
+
+/**
+ * Head of one memory's saved chain: the saved revision no other saved revision of that memory has as
+ * parent. Independent of key order. Valid states have exactly one; on crafted data fall back to the
+ * latest savedAt (then latest in iteration order) so reads never throw.
+ */
+function chainHead(savedOfMemory: Revision[]): Revision | undefined {
+  if (savedOfMemory.length === 0) return undefined;
+  const parents = new Set<string>();
+  for (const r of savedOfMemory) if (r.parentRevisionId !== null) parents.add(r.parentRevisionId);
+  const tips = savedOfMemory.filter((r) => !parents.has(r.id));
+  const pool = tips.length ? tips : savedOfMemory;
+  let best = pool[0];
+  for (const r of pool) if ((r.savedAt ?? "") >= (best.savedAt ?? "")) best = r;
+  return best;
+}
+
+/** One pass over all revisions. */
+function indexRevisions(state: WorkspaceState): RevisionIndex {
+  const savedBy = new Map<string, Revision[]>();
+  const pending = new Map<string, Revision>();
+  for (const r of Object.values(state.revisions)) {
+    if (r.status === "saved") {
+      const list = savedBy.get(r.memoryId);
+      if (list) list.push(r);
+      else savedBy.set(r.memoryId, [r]);
+    } else if (r.status === "pending") pending.set(r.memoryId, r);
+  }
+  const saved = new Map<string, Revision>();
+  for (const [id, list] of savedBy) saved.set(id, chainHead(list) as Revision);
+  return { saved, pending };
+}
+
+/** Ids of the memories that currently have at least one saved revision (one pass). */
+export function memoryIdsWithSaved(state: WorkspaceState): Set<string> {
+  const out = new Set<string>();
+  for (const r of Object.values(state.revisions)) if (r.status === "saved") out.add(r.memoryId);
+  return out;
+}
+
+/** The current saved revision of a memory (head of its saved chain), if any. */
+export function currentSavedRevision(state: WorkspaceState, memoryId: string): Revision | undefined {
+  return chainHead(Object.values(state.revisions).filter((r) => r.memoryId === memoryId && r.status === "saved"));
+}
+
+export function latestSavedRevisionId(state: WorkspaceState, memoryId: string): string | null {
+  return currentSavedRevision(state, memoryId)?.id ?? null;
+}
+
+/** The open proposal (pending revision) of a memory, if any. */
+export function pendingRevisionFor(state: WorkspaceState, memoryId: string): Revision | undefined {
+  for (const r of Object.values(state.revisions)) {
+    if (r.memoryId === memoryId && r.status === "pending") return r;
+  }
+  return undefined;
+}
+
+/** memoryId -> its pending revision. */
+export function pendingRevisionMap(state: WorkspaceState): Record<string, Revision> {
+  const out: Record<string, Revision> = {};
+  for (const [id, r] of indexRevisions(state).pending) out[id] = r;
+  return out;
+}
+
+/** Open proposals, in the order they were made (oldest first). */
+export function pendingChanges(state: WorkspaceState): PendingChange[] {
+  const { saved, pending } = indexRevisions(state);
   const out: PendingChange[] = [];
-  for (const [memoryId, rev] of Object.entries(pendingRevisionMap(state, branchId))) {
-    const committedId = safeGet(tree, memoryId);
-    const committed = committedId ? getRevision(state, committedId).snapshot : undefined;
-    if (committed && deepEqual(committed, rev.snapshot)) continue;
+  const ordered = Object.values(state.revisions)
+    .map((rev, i) => ({ rev, i }))
+    .sort((x, y) => (x.rev.createdAt === y.rev.createdAt ? x.i - y.i : x.rev.createdAt < y.rev.createdAt ? -1 : 1))
+    .map((x) => x.rev);
+  for (const rev of ordered) {
+    if (rev.status !== "pending" || pending.get(rev.memoryId) !== rev) continue;
+    if (!safeGet(state.memories, rev.memoryId)) continue;
     out.push({
-      memoryId,
+      memoryId: rev.memoryId,
       revisionId: rev.id,
-      kind: changeKind(committed, rev.snapshot),
+      kind: changeKind(saved.get(rev.memoryId)?.snapshot, rev.snapshot),
       title: rev.snapshot.title,
+      author: rev.author,
+      origin: rev.origin,
+      createdAt: rev.createdAt,
+      note: rev.note,
     });
   }
   return out;
 }
 
-/** Latest revision id for a memory on a branch (draft first, else committed). */
-export function latestRevisionId(
-  state: WorkspaceState,
-  branchId: string,
-  memoryId: string,
-): string | null {
-  const pending = safeGet(pendingRevisionMap(state, branchId), memoryId);
-  if (pending) return pending.id;
-  return safeGet(branchTree(state, branchId), memoryId) ?? null;
+/** Alias: the Inbox list. */
+export const listPending = pendingChanges;
+
+/** Latest revision of a memory: its open proposal if any, else the current saved revision. */
+export function latestRevisionId(state: WorkspaceState, memoryId: string): string | null {
+  const { saved, pending } = indexRevisions(state);
+  return (pending.get(memoryId) ?? saved.get(memoryId))?.id ?? null;
 }
 
-export function listMemories(
+function materialize(
   state: WorkspaceState,
-  branchId: string = state.currentBranchId,
-): Memory[] {
-  const tree = branchTree(state, branchId);
-  const pending = pendingRevisionMap(state, branchId);
-  const pm = state.pendingMerge;
-  const conflicted = new Set(
-    pm && pm.targetBranchId === branchId
-      ? pm.conflicts.filter((c) => !c.resolution).map((c) => c.memoryId)
-      : [],
-  );
-  const ids = new Set([...Object.keys(tree), ...Object.keys(pending)]);
+  memoryId: string,
+  saved: Revision | undefined,
+  pending: Revision | undefined,
+): Memory | undefined {
+  const identity = safeGet(state.memories, memoryId);
+  const shown = saved ?? pending;
+  if (!identity || !shown) return undefined;
+  const snap = shown.snapshot;
+  return {
+    ...identity,
+    ...snap,
+    tags: [...snap.tags],
+    status: pending ? "pending" : snap.archived ? "archived" : "saved",
+    hasPending: !!pending,
+    updatedAt: shown.savedAt ?? shown.createdAt,
+    revisionId: shown.id,
+  };
+}
+
+/**
+ * Memories as the user sees them: saved content (never the proposal's), flagged `pending` while a
+ * proposal is open. Memories that have no saved revision yet (new agent proposals, or rejected ones)
+ * are hidden unless `includePending` is set (rejected ones stay hidden either way).
+ */
+export function listMemories(state: WorkspaceState, opts: { includePending?: boolean } = {}): Memory[] {
+  const { saved, pending } = indexRevisions(state);
   const out: Memory[] = [];
-  for (const id of ids) {
-    const identity = safeGet(state.memories, id);
-    if (!identity) continue;
-    const draft = safeGet(pending, id);
-    const treeRevId = safeGet(tree, id);
-    const rev = draft ?? getRevision(state, treeRevId as string);
-    const committed = treeRevId ? getRevision(state, treeRevId).snapshot : undefined;
-    const isDraft = !!draft && !(committed && deepEqual(committed, draft.snapshot));
-    const snap = rev.snapshot;
-    const status = conflicted.has(id)
-      ? "conflict"
-      : isDraft
-        ? "draft"
-        : snap.archived
-          ? "archived"
-          : "committed";
-    out.push({
-      ...identity,
-      ...snap,
-      tags: [...snap.tags],
-      status,
-      branchId,
-      updatedAt: rev.createdAt,
-      revisionId: rev.id,
-    });
+  for (const id of Object.keys(state.memories)) {
+    const s = saved.get(id);
+    if (!s && !opts.includePending) continue;
+    const m = materialize(state, id, s, pending.get(id));
+    if (m) out.push(m);
   }
   return out.sort((a, b) =>
     a.updatedAt === b.updatedAt ? a.id.localeCompare(b.id) : a.updatedAt < b.updatedAt ? 1 : -1,
   );
 }
 
-export function getMemory(
-  state: WorkspaceState,
-  memoryId: string,
-  branchId: string = state.currentBranchId,
-): Memory | undefined {
-  return listMemories(state, branchId).find((m) => m.id === memoryId);
+/** One memory including pending-only ones; undefined only when it has no saved or pending revision. */
+export function getMemory(state: WorkspaceState, memoryId: string): Memory | undefined {
+  return materialize(state, memoryId, currentSavedRevision(state, memoryId), pendingRevisionFor(state, memoryId));
 }
 
-/** Revisions of a memory visible on a branch, newest first (follows parentRevisionId). */
+/**
+ * Revisions of a memory, newest first. By default only SAVED revisions (its real history), walked
+ * along the saved chain from the current revision back; `includeUnsaved` lists every revision
+ * (pending / rejected / superseded too) by creation time.
+ */
 export function memoryHistory(
   state: WorkspaceState,
   memoryId: string,
-  branchId: string = state.currentBranchId,
+  opts: { includeUnsaved?: boolean } = {},
 ): Revision[] {
+  const mine = Object.values(state.revisions).filter((r) => r.memoryId === memoryId);
+  if (opts.includeUnsaved) {
+    return mine
+      .map((r, i) => ({ r, i }))
+      .sort((a, b) => (a.r.createdAt === b.r.createdAt ? b.i - a.i : a.r.createdAt < b.r.createdAt ? 1 : -1))
+      .map((x) => x.r);
+  }
+  return walkChain(mine.filter((r) => r.status === "saved"));
+}
+
+/** One memory's saved revisions as a chain, newest first (visited set: safe on cyclic data). */
+function walkChain(savedRevs: Revision[]): Revision[] {
+  const byId = new Map(savedRevs.map((r) => [r.id, r]));
   const out: Revision[] = [];
-  let cur = latestRevisionId(state, branchId, memoryId);
-  while (cur) {
-    const r = getRevision(state, cur);
-    out.push(r);
-    cur = r.parentRevisionId;
+  const seen = new Set<string>();
+  let cur = chainHead(savedRevs);
+  while (cur && !seen.has(cur.id)) {
+    seen.add(cur.id);
+    out.push(cur);
+    cur = cur.parentRevisionId === null ? undefined : byId.get(cur.parentRevisionId);
   }
   return out;
 }
 
-/** All ancestor commits of a branch head (inclusive), newest first. */
-export function commitLog(
-  state: WorkspaceState,
-  branchId: string = state.currentBranchId,
-): Commit[] {
-  const head = getBranch(state, branchId).headCommitId;
-  const seen = new Map<string, Commit>();
-  const queue = head ? [head] : [];
-  while (queue.length) {
-    const id = queue.shift() as string;
-    if (seen.has(id)) continue;
-    const c = getCommit(state, id);
-    seen.set(id, c);
-    queue.push(...c.parentIds);
+/** Position of each saved revision in its memory's chain (0 = first saved). */
+function chainPositions(state: WorkspaceState): Map<string, number> {
+  const groups = new Map<string, Revision[]>();
+  for (const r of Object.values(state.revisions)) {
+    if (r.status !== "saved") continue;
+    const g = groups.get(r.memoryId);
+    if (g) g.push(r);
+    else groups.set(r.memoryId, [r]);
   }
-  const order = [...seen.values()];
-  return order
-    .map((c, i) => ({ c, i }))
-    .sort((a, b) => (a.c.timestamp === b.c.timestamp ? a.i - b.i : a.c.timestamp < b.c.timestamp ? 1 : -1))
-    .map((x) => x.c);
+  const pos = new Map<string, number>();
+  for (const g of groups.values()) {
+    const hist = walkChain(g);
+    hist.forEach((r, i) => pos.set(r.id, hist.length - 1 - i));
+  }
+  return pos;
 }
 
-export function ancestorSet(state: WorkspaceState, commitId: string | null): Set<string> {
-  const seen = new Set<string>();
-  const stack = commitId ? [commitId] : [];
-  while (stack.length) {
-    const id = stack.pop() as string;
-    if (seen.has(id)) continue;
-    seen.add(id);
-    stack.push(...getCommit(state, id).parentIds);
-  }
-  return seen;
-}
-
-/** Nearest common ancestor commit of two commits (null when histories are unrelated). */
-export function mergeBase(
-  state: WorkspaceState,
-  a: string | null,
-  b: string | null,
-): string | null {
-  const ancestorsOfA = ancestorSet(state, a);
-  const seen = new Set<string>();
-  const queue = b ? [b] : [];
-  while (queue.length) {
-    const id = queue.shift() as string;
-    if (seen.has(id)) continue;
-    seen.add(id);
-    if (ancestorsOfA.has(id)) return id;
-    queue.push(...getCommit(state, id).parentIds);
-  }
-  return null;
+/** Saved revisions across all memories, newest saved first (ties: later in its chain, then later appended). */
+export function timeline(state: WorkspaceState, limit?: number): Revision[] {
+  const pos = chainPositions(state);
+  const saved = Object.values(state.revisions)
+    .filter((r) => r.status === "saved")
+    .map((r, i) => ({ r, i }))
+    .sort((a, b) => {
+      const ta = a.r.savedAt ?? "";
+      const tb = b.r.savedAt ?? "";
+      if (ta !== tb) return ta < tb ? 1 : -1;
+      const pa = pos.get(a.r.id) ?? 0;
+      const pb = pos.get(b.r.id) ?? 0;
+      return pa === pb ? b.i - a.i : pb - pa;
+    })
+    .map((x) => x.r);
+  return limit === undefined ? saved : saved.slice(0, Math.max(0, limit));
 }

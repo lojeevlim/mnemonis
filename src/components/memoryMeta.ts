@@ -1,11 +1,17 @@
 import type { ColorName } from "lojee-ui";
-import type { ChangeKind, MemoryStatus } from "../domain";
+import type { ChangeKind, MemoryStatus, Origin } from "../domain";
 
 export const STATUS_META: Record<MemoryStatus, { label: string; color: ColorName }> = {
-  draft: { label: "Draft", color: "amber" },
-  committed: { label: "Saved", color: "emerald" },
+  saved: { label: "Long Term Memory", color: "emerald" },
+  pending: { label: "Waiting for review", color: "amber" },
   archived: { label: "Archived", color: "slate" },
-  conflict: { label: "Conflict", color: "rose" },
+};
+
+export const ORIGIN_META: Record<Origin, { label: string; color: ColorName }> = {
+  user: { label: "You", color: "blue" },
+  agent: { label: "Agent", color: "violet" },
+  import: { label: "Imported", color: "slate" },
+  system: { label: "System", color: "slate" },
 };
 
 export const KIND_META: Record<ChangeKind, { label: string; color: ColorName }> = {

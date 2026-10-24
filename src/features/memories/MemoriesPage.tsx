@@ -8,7 +8,7 @@ import { PageHeader } from "../../components/PageHeader";
 import { StatusBadge } from "../../components/StatusBadge";
 import { formatRelative, isDemoMemory, STATUS_META, typeLabel } from "../../components/memoryMeta";
 import { useWorkspace } from "../../stores/workspaceStore";
-import { CommitBar } from "./CommitBar";
+import { InboxBar } from "./InboxBar";
 import { CreateMemoryModal } from "./CreateMemoryModal";
 import { MemoryDetail } from "./MemoryDetail";
 
@@ -107,7 +107,7 @@ export function MemoriesPage() {
               </Link>
             </>
           ) : (
-            "Everything your agents and you have remembered on this branch."
+            "Everything you and your agents have remembered."
           )
         }
         actions={
@@ -117,7 +117,7 @@ export function MemoriesPage() {
         }
       />
 
-      <CommitBar onOpenMemory={openMemory} />
+      <InboxBar />
 
       <div className="flex flex-wrap items-center gap-2" role="search">
         <div className="min-w-52 flex-1">

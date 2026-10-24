@@ -7,7 +7,7 @@ import { StatusBadge } from "../../components/StatusBadge";
 import { formatDateTime, formatRelative, isDemoMemory } from "../../components/memoryMeta";
 import { DEMO_TAG } from "../../data/seed";
 import { useWorkspace } from "../../stores/workspaceStore";
-import { frequentTopics, overviewStats, recentChanges, recentCommits } from "./selectors";
+import { frequentTopics, overviewStats, recentActivity, recentChanges } from "./selectors";
 
 export function OverviewPage() {
   const state = useWorkspace((s) => s.state);
@@ -17,7 +17,7 @@ export function OverviewPage() {
         ? {
             stats: overviewStats(state),
             changes: recentChanges(state, 6),
-            commits: recentCommits(state, 5),
+            activity: recentActivity(state, 5),
             topics: frequentTopics(state, { limit: 10, exclude: [DEMO_TAG] }),
             hasDemo: Object.values(state.memories).some(isDemoMemory),
           }
@@ -25,17 +25,17 @@ export function OverviewPage() {
     [state],
   );
   if (!data) return null;
-  const { stats, changes, commits, topics, hasDemo } = data;
+  const { stats, changes, activity, topics, hasDemo } = data;
 
-  const commitItems: TimelineItem[] = commits.map(({ commit, changeCount, demo }) => ({
+  const activityItems: TimelineItem[] = activity.map(({ revision, demo }) => ({
     title: (
       <span className="inline-flex items-center gap-2">
-        {commit.message}
+        {revision.snapshot.title}
         {demo && <DemoBadge />}
       </span>
     ),
-    description: `${commit.author} · ${changeCount} ${changeCount === 1 ? "change" : "changes"}`,
-    timestamp: formatDateTime(commit.timestamp),
+    description: `${revision.note || "Saved"} · ${revision.author}`,
+    timestamp: formatDateTime(revision.savedAt ?? revision.createdAt),
     icon: "circle-dot",
   }));
 
@@ -45,7 +45,7 @@ export function OverviewPage() {
         title="Overview"
         description={
           <span className="inline-flex flex-wrap items-center gap-2">
-            Branch <Badge variant="outline" size="sm" icon="git-branch">{stats.branchName}</Badge>
+            Your memories at a glance.
             {hasDemo && (
               <>
                 <DemoBadge /> <span className="text-xs">Includes seeded demo memories.</span>
@@ -57,11 +57,11 @@ export function OverviewPage() {
 
       <section aria-label="Workspace stats" className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <Stat label="Memories" value={stats.memories} icon="book-open" />
-        <Link to="/memories?status=draft" className="rounded-lg focus-visible:outline-2" aria-label="Unsaved drafts, open in Memories">
-          <Stat label="Drafts (unsaved)" value={stats.drafts} icon="pencil" color="amber" />
+        <Link to="/inbox" className="rounded-lg focus-visible:outline-2" aria-label="Changes waiting for review, open Inbox">
+          <Stat label="Short Term Memory" value={stats.pending} icon="inbox" color="amber" />
         </Link>
-        <Stat label="Active branches" value={stats.branches} icon="git-branch" />
-        <Stat label="Versions" value={stats.commits} icon="circle-dot" />
+        <Stat label="Archived" value={stats.archived} icon="folder" />
+        <Stat label="Saved changes" value={stats.saves} icon="circle-dot" />
       </section>
 
       <div className="grid gap-4 lg:grid-cols-2">
@@ -89,13 +89,13 @@ export function OverviewPage() {
           )}
         </Card>
 
-        <Card title="Recent versions" variant="outline" padding="sm">
-          {commitItems.length === 0 ? (
-            <EmptyState icon="circle-dot" title="No versions yet">
-              Save your drafts as a version from the Memories page to record history.
+        <Card title="Recent activity" variant="outline" padding="sm">
+          {activityItems.length === 0 ? (
+            <EmptyState icon="circle-dot" title="Nothing saved yet">
+              Edits you make are saved to long-term memory and show up here.
             </EmptyState>
           ) : (
-            <Timeline items={commitItems} />
+            <Timeline items={activityItems} />
           )}
         </Card>
 

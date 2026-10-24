@@ -1,5 +1,5 @@
 import type { Memory, Relation } from "../../domain";
-import { runLibrarian, runReviewer, jaccard, tokenize, type WorkflowInput } from "./workflows";
+import { runOrganize, runReview, jaccard, tokenize, type WorkflowInput } from "./workflows";
 
 const NOW = Date.parse("2026-06-01T00:00:00.000Z");
 const DAY = 86_400_000;
@@ -17,15 +17,15 @@ function mem(id: string, p: Partial<Memory> = {}): Memory {
     createdAt: "2026-05-30T00:00:00.000Z",
     source: "manual",
     provenance: { origin: "user", createdBy: "me" },
-    status: "committed",
-    branchId: "main",
+    status: "saved",
+    hasPending: false,
     updatedAt: "2026-05-30T00:00:00.000Z",
     revisionId: `rev_${id}`,
     ...p,
   };
 }
 function rel(fromId: string, toId: string, label = "related to"): Relation {
-  return { id: `${fromId}-${toId}`, fromId, toId, label, provenance: { origin: "user", createdBy: "me" }, createdAt: "2026-05-30T00:00:00.000Z" };
+  return { id: `${fromId}-${toId}`, fromId, toId, label, provenance: { origin: "user", createdBy: "me" }, createdAt: "2026-05-30T00:00:00.000Z", status: "saved", decidedAt: null };
 }
 /** Fully connected, fully tagged: only the findings a test adds should show up. */
 function input(memories: Memory[], relations: Relation[] = []): WorkflowInput {
@@ -33,8 +33,8 @@ function input(memories: Memory[], relations: Relation[] = []): WorkflowInput {
   const links = relations.length ? relations : ids.slice(1).map((id) => rel(ids[0], id));
   return { memories, relations: links, collections: [{ id: "col1", name: "Col" }], now: NOW };
 }
-const lib = (i: WorkflowInput) => runLibrarian(i, { duplicateThreshold: 0.6 });
-const rev = (i: WorkflowInput, staleDays = 90) => runReviewer(i, { staleDays });
+const lib = (i: WorkflowInput) => runOrganize(i, { duplicateThreshold: 0.6 });
+const rev = (i: WorkflowInput, staleDays = 90) => runReview(i, { staleDays });
 const kinds = (ps: { kind: string }[]) => ps.map((p) => p.kind);
 
 describe("text helpers", () => {
@@ -45,14 +45,14 @@ describe("text helpers", () => {
   });
 });
 
-describe("Librarian", () => {
+describe("Organize", () => {
   it("proposes archiving the older copy of an exact-title duplicate (high confidence)", () => {
     const a = mem("a", { title: "Release  Process!", updatedAt: "2026-01-01T00:00:00.000Z" });
     const b = mem("b", { title: "release process", content: "different words entirely here" });
     const ps = lib(input([a, b]));
     expect(ps).toHaveLength(1);
     expect(ps[0]).toMatchObject({ kind: "duplicate", confidence: "high", action: { kind: "archive", memoryId: "a" } });
-    expect(ps[0].id).toBe("librarian:duplicate:a+b");
+    expect(ps[0].id).toBe("organize:duplicate:a+b");
   });
 
   it("links near-duplicates above the threshold and ignores dissimilar or archived ones", () => {
@@ -103,7 +103,7 @@ describe("Librarian", () => {
   });
 });
 
-describe("Reviewer", () => {
+describe("Review", () => {
   it("flags memories older than the configured number of days", () => {
     const old = mem("old", { updatedAt: new Date(NOW - 100 * DAY).toISOString() });
     const fresh = mem("fresh", { updatedAt: new Date(NOW - 10 * DAY).toISOString() });

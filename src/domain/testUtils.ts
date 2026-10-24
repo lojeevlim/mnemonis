@@ -1,22 +1,27 @@
 import { createSequentialContext } from "./context";
 import { createMemory } from "./memoryOps";
 import { createEmptyWorkspace } from "./state";
-import { commitDrafts } from "./versioning";
-import type { Memory, WorkspaceState } from "./types";
+import type { Actor, Memory, WorkspaceState } from "./types";
 
 export const A = "tester";
+export const USER: Actor = { kind: "user", name: A };
+export const AGENT: Actor = { kind: "agent", name: "bot" };
 
 export function setup() {
   return { ctx: createSequentialContext(), state: createEmptyWorkspace() };
 }
 
-/** Creates a memory and commits it on the current branch. */
-export function seedCommitted(
+/** Creates a memory as the user: it is saved immediately (long term). */
+export function seedSaved(
   state: WorkspaceState,
   ctx = createSequentialContext(),
   input: { id?: string; title?: string; content?: string } = {},
 ): { state: WorkspaceState; memory: Memory; ctx: ReturnType<typeof createSequentialContext> } {
-  const created = createMemory(state, ctx, { title: input.title ?? "Base", content: input.content ?? "line1\nline2\nline3", id: input.id, author: A });
-  const committed = commitDrafts(created.state, ctx, { message: "init", author: A });
-  return { state: committed.state, memory: created.value, ctx };
+  const created = createMemory(state, ctx, {
+    title: input.title ?? "Base",
+    content: input.content ?? "line1\nline2\nline3",
+    id: input.id,
+    actor: USER,
+  });
+  return { state: created.state, memory: created.value, ctx };
 }

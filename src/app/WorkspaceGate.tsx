@@ -2,6 +2,8 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Alert, Button, ErrorState, LoadingState, Skeleton } from "lojee-ui";
 import type { LoadIssue } from "../data/repository";
 import { useWorkspace } from "../stores/workspaceStore";
+import { LocalRepository } from "../data/localRepository";
+import { clearServerSettings } from "../data/serverSettings";
 
 const LOAD_ISSUE_COPY: Partial<Record<LoadIssue, { title: string; body: string }>> = {
   corrupt: {
@@ -27,6 +29,9 @@ export function WorkspaceGate({ children }: { children: ReactNode }) {
   const error = useWorkspace((s) => s.error);
   const loadIssue = useWorkspace((s) => s.loadIssue);
   const persistError = useWorkspace((s) => s.persistError);
+  const mode = useWorkspace((s) => s.mode);
+  const repoEpoch = useWorkspace((s) => s.repoEpoch);
+  const hasState = state !== null;
   const init = useWorkspace((s) => s.init);
   const clearError = useWorkspace((s) => s.clearError);
   const [dismissed, setDismissed] = useState<string[]>([]);
@@ -36,6 +41,12 @@ export function WorkspaceGate({ children }: { children: ReactNode }) {
     if (!s.state && !s.loading) void init();
   }, [init]);
 
+  // Live updates (server mode only): agent proposals appear without a reload. Stops on unmount.
+  useEffect(() => {
+    if (!hasState || mode !== "remote") return;
+    return useWorkspace.getState().startLiveUpdates();
+  }, [hasState, mode, repoEpoch]);
+
   if (!state) {
     if (error) {
       return (
@@ -43,9 +54,23 @@ export function WorkspaceGate({ children }: { children: ReactNode }) {
           <ErrorState
             title="Could not load your workspace"
             action={
-              <Button size="sm" onClick={() => void init()}>
-                Try again
-              </Button>
+              <div className="flex gap-2">
+                <Button size="sm" onClick={() => void init()}>
+                  Try again
+                </Button>
+                {mode === "remote" && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      clearServerSettings();
+                      void useWorkspace.getState().switchRepository(new LocalRepository());
+                    }}
+                  >
+                    Switch to local mode
+                  </Button>
+                )}
+              </div>
             }
           >
             {error}
@@ -82,11 +107,14 @@ export function WorkspaceGate({ children }: { children: ReactNode }) {
         {persistError && !dismissed.includes(persistKey) && (
           <Alert
             variant="error"
-            title="Changes could not be saved to this browser"
+            title={mode === "remote" ? "Problem talking to the Mnemonis server" : "Changes could not be saved to this browser"}
             closable
             onClose={() => setDismissed((d) => [...d, persistKey])}
           >
-            {persistError} Your latest changes exist only in memory until storage works again.
+            {persistError}{" "}
+            {mode === "remote"
+              ? "Live updates continue to retry; check the server and your token in Settings."
+              : "Your latest changes exist only in memory until storage works again."}
           </Alert>
         )}
         {error && (

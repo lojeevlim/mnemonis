@@ -1,7 +1,7 @@
 import { Badge, Button } from "lojee-ui";
 import { typeLabel } from "../../components/memoryMeta";
 import type { GraphEdge, GraphNode } from "./graphModel";
-import { AMBER, ROSE, typeColor } from "./graphStyle";
+import { AMBER, typeColor } from "./graphStyle";
 
 function Section({ title, count, children }: { title: string; count?: number; children: React.ReactNode }) {
   return (
@@ -137,14 +137,7 @@ export function GraphSidePanel({
               <circle cx="7" cy="7" r="4" fill="var(--color-fg-subtle)" />
               <circle cx="7" cy="7" r="6" fill="none" stroke={AMBER} strokeWidth="1.5" />
             </svg>
-            Draft (amber ring)
-          </li>
-          <li className="flex items-center gap-2">
-            <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
-              <circle cx="7" cy="7" r="4" fill="var(--color-fg-subtle)" />
-              <circle cx="7" cy="7" r="6" fill="none" stroke={ROSE} strokeWidth="1.5" />
-            </svg>
-            Conflict (rose ring)
+            Waiting for review (amber ring)
           </li>
           <li className="flex items-center gap-2">
             <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">

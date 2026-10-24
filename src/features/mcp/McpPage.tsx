@@ -12,22 +12,22 @@ export const READ_TOOLS: McpTool[] = [
   { name: "memory_list", description: "List memories, filtered by type, collection, tag or status." },
   { name: "memory_related", description: "Find memories related to a given memory through stored relations." },
   { name: "memory_history", description: "Show the revision history of a memory." },
-  { name: "memory_status", description: "Report the current branch, pending drafts and recent versions." },
+  { name: "memory_status", description: "Report the pending count (changes waiting for review) and recent saved changes." },
+  { name: "memory_diff", description: "Show the difference between a pending proposal and the saved memory, or between two revisions." },
 ];
 
+/** Every write lands in the Inbox (short-term memory); only the user can approve or reject it. */
 export const WRITE_TOOLS: McpTool[] = [
-  { name: "memory_save", description: "Create a new memory as a draft." },
-  { name: "memory_update", description: "Edit a memory, producing a new draft revision." },
-  { name: "memory_link", description: "Relate two memories, recording who or what created the link." },
-  { name: "memory_archive", description: "Archive a memory (a reviewable draft, never a delete)." },
-  { name: "memory_commit", description: "Save drafts as a version with a note (not a git commit; versions are stored by Mnemonis). Only with an explicit read/write grant." },
-  { name: "memory_branch_create", description: "Create a branch from a version." },
-  { name: "memory_diff", description: "Show the difference between drafts, versions or branches." },
+  { name: "memory_save", description: "Propose a new memory. It waits in your Inbox until you approve it." },
+  { name: "memory_update", description: "Propose an edit to a memory. It waits in your Inbox until you approve it." },
+  { name: "memory_link", description: "Propose a link between two memories, recording who or what created it. It waits in your Inbox until you approve it." },
+  { name: "memory_archive", description: "Propose archiving a memory (reviewable in your Inbox, never a delete)." },
 ];
 
-export const CLAUDE_CODE_SNIPPET = `# Placeholder values. This will NOT work until the Mnemonis backend is deployed.
-claude mcp add --transport http mnemonis <YOUR_MCP_URL>
-# Authorization (future): send "Authorization: Bearer <YOUR_TOKEN>" from the token created in this page.`;
+export const MCP_URL = "http://localhost:8787/mcp";
+
+/** The token comes from `npm run token` in the server project; never paste it into a chat. */
+export const CLAUDE_CODE_SNIPPET = `claude mcp add --transport http mnemonis ${MCP_URL} --header "Authorization: Bearer <token>"`;
 
 function endpoint(): string | null {
   const v = (import.meta.env.VITE_MCP_SERVER_URL as string | undefined)?.trim();
@@ -63,13 +63,13 @@ export function McpPage() {
         description="Let AI clients such as Claude Code read and propose memories over the Model Context Protocol."
       />
 
-      <Alert variant="warning" title="Backend not built yet — local demo mode">
-        There is no MCP server yet. Nothing on this page connects to anything; it previews what will be available once the backend
-        ships.
+      <Alert variant="warning" title="Backend pending — connect it in Settings">
+        This page does not connect to anything by itself. Run the Mnemonis server, then connect this app to it in Settings
+        (Mnemonis server). Until then the app stays in local demo mode and the tool list below is a preview.
       </Alert>
 
       <p className="text-sm text-fg-muted">
-        Note: "memory_commit" saves a Mnemonis version of your drafts. It is not a git commit and does not touch any Git repository.
+        Note: tools never save on their own. Anything an AI client writes waits in your Inbox as short-term memory; approving or rejecting it is something only you can do in this app, so there are no approve or reject tools.
       </p>
 
       <Card variant="outline" padding="sm" title="Endpoint">
@@ -114,7 +114,7 @@ export function McpPage() {
           </div>
           <ul className="list-disc space-y-1 pl-5 text-sm text-fg-muted">
             <li>
-              <strong>Scopes:</strong> read-only tokens can search and read; read/write tokens can also create drafts and save versions.
+              <strong>Scopes:</strong> read-only tokens can search and read; read/write tokens can also propose changes, which wait in your Inbox until you approve them (a token can never approve its own changes).
             </li>
             <li>
               <strong>Shown once:</strong> the full token is displayed only when created.
@@ -135,8 +135,8 @@ export function McpPage() {
       <Card variant="outline" padding="sm" title="Connect Claude Code">
         <div className="space-y-3">
           <p className="text-sm text-fg-muted">
-            Replace <code>&lt;YOUR_MCP_URL&gt;</code> and <code>&lt;YOUR_TOKEN&gt;</code> with real values. They are placeholders: this
-            will not work until the backend is deployed and a token can be created.
+            Start the server project, then run this in a terminal. Replace <code>&lt;token&gt;</code> with the output of{" "}
+            <code>npm run token</code> in the server project. Keep the token private: do not paste it into a chat or commit it.
           </p>
           <CodeSnippet code={CLAUDE_CODE_SNIPPET} language="bash" title="Terminal" />
         </div>

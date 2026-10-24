@@ -1,9 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { diffBranches, diffCommits, diffLines, diffRevisions, diffWorkingTree } from "./diff";
-import { createMemory, updateMemory } from "./memoryOps";
-import { commitDrafts, createBranch } from "./versioning";
-import { A, seedCommitted } from "./testUtils";
-import { setup } from "./testUtils";
+import { diffLines, diffRevisions, diffSnapshots } from "./diff";
+import { updateMemory } from "./memoryOps";
+import { memoryHistory } from "./queries";
+import { seedSaved, setup, USER } from "./testUtils";
 
 describe("diffLines", () => {
   it("handles equal, add, remove, replace", () => {
@@ -26,33 +25,23 @@ describe("diffLines", () => {
 
 describe("domain diffs", () => {
   it("diffs revisions field-by-field with line diff for content", () => {
-    const base = seedCommitted(setup().state);
+    const base = seedSaved(setup().state);
     const s = updateMemory(base.state, base.ctx, {
       id: base.memory.id,
       patch: { title: "T2", content: "line1\nlineX\nline3", tags: ["z"] },
-      author: A,
+      actor: USER,
     }).state;
-    const newRev = Object.keys(s.revisions).at(-1) as string;
+    const newRev = memoryHistory(s, base.memory.id)[0].id;
     const d = diffRevisions(s, base.memory.revisionId, newRev);
     expect(d.map((f) => f.field).sort()).toEqual(["content", "tags", "title"]);
     const content = d.find((f) => f.field === "content");
     expect(content?.lines?.filter((l) => l.type !== "equal")).toHaveLength(2);
   });
 
-  it("diffs commits, branches and the working tree", () => {
-    const base = seedCommitted(setup().state);
-    const c1 = base.state.branches.main.headCommitId;
-    let s = createBranch(base.state, base.ctx, { name: "f", switchTo: true }).state;
-    s = createMemory(s, base.ctx, { title: "New", author: A }).state;
-    s = updateMemory(s, base.ctx, { id: base.memory.id, patch: { title: "Edited" }, author: A }).state;
-    const working = diffWorkingTree(s);
-    expect(working.map((d) => d.kind).sort()).toEqual(["added", "modified"]);
-    const c = commitDrafts(s, base.ctx, { message: "f", author: A });
-    const dc = diffCommits(c.state, c1, c.value.id);
-    expect(dc).toHaveLength(2);
-    const branchId = c.state.currentBranchId;
-    expect(diffBranches(c.state, "main", branchId)).toHaveLength(2);
-    expect(diffBranches(c.state, "main", "main")).toEqual([]);
-    expect(diffWorkingTree(c.state)).toEqual([]);
+  it("diffSnapshots against nothing lists every non-empty field", () => {
+    const base = seedSaved(setup().state);
+    const snapshot = Object.values(base.state.revisions)[0].snapshot;
+    expect(diffSnapshots(undefined, snapshot).map((f) => f.field)).toContain("title");
+    expect(diffSnapshots(snapshot, snapshot)).toEqual([]);
   });
 });

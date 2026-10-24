@@ -1,93 +1,211 @@
 import { DomainError, type DomainContext } from "./context";
+import { assertActor } from "./limits";
+import { diffSnapshots } from "./diff";
+import { changeKind, currentSavedRevision, getRevision, pendingChanges } from "./queries";
 import {
-  getBranch,
-  getCommit,
-  pendingChanges,
-} from "./queries";
-import type { Branch, Commit, Mutation, Revision, WorkspaceState } from "./types";
-import { assertSafeId, requireText, safeGet } from "./util";
+  approveRelationsIn,
+  rejectOrphanedRelations,
+  rejectRelationsIn,
+} from "./relations";
+import type { Actor, MemoryFieldName, MemorySnapshot, Mutation, Revision, WorkspaceState } from "./types";
+
+const hasSavedRevision = (state: WorkspaceState, memoryId: string): boolean =>
+  !!currentSavedRevision(state, memoryId);
+
+const FIELD_LABEL: Record<MemoryFieldName, string> = {
+  title: "title",
+  content: "content",
+  type: "type",
+  tags: "tags",
+  collectionId: "collection",
+  archived: "archived",
+  metadata: "metadata",
+};
+
+/** Auto-generated note for a change: "Created", "Edited content, tags", "Archived", "Restored". */
+export function describeChange(before: MemorySnapshot | undefined, after: MemorySnapshot): string {
+  const kind = changeKind(before, after);
+  if (kind === "create") return "Created";
+  if (kind === "archive") return "Archived";
+  if (kind === "restore") return "Restored";
+  const fields = diffSnapshots(before, after).map((f) => FIELD_LABEL[f.field]);
+  return fields.length ? `Edited ${fields.join(", ")}` : "Edited";
+}
+
+/** Approving / rejecting is a human decision: agents (and anything acting as one) are refused. */
+function requireUser(actor: Actor): void {
+  assertActor(actor);
+  if (actor.kind !== "user") {
+    throw new DomainError("forbidden", "Only a user can approve or reject changes");
+  }
+}
+
+function requirePending(state: WorkspaceState, revisionId: string): Revision {
+  const rev = getRevision(state, revisionId);
+  if (rev.status !== "pending") throw new DomainError("not_pending", "This change is not waiting for review");
+  return rev;
+}
+
+/** The proposal must still be based on the memory's current saved revision. */
+function requireCurrent(state: WorkspaceState, rev: Revision): void {
+  const current = currentSavedRevision(state, rev.memoryId)?.id ?? null;
+  if (rev.parentRevisionId !== current) {
+    throw new DomainError("proposal_outdated", "The memory changed since this proposal was made; reject it and propose again");
+  }
+}
+
+/** Saved revisions are applied oldest-first so each one's parent is the previously saved one. */
+function approveMany(state: WorkspaceState, ctx: DomainContext, ids: string[]): WorkspaceState {
+  let next = state;
+  for (const id of ids) {
+    const rev = next.revisions[id];
+    const stamp = ctx.now();
+    // The proposal may point at a collection deleted meanwhile: never save a dangling collectionId.
+    const cid = rev.snapshot.collectionId;
+    const snapshot =
+      cid !== null && !Object.hasOwn(next.collections, cid) ? { ...rev.snapshot, collectionId: null } : rev.snapshot;
+    next = {
+      ...next,
+      revisions: { ...next.revisions, [id]: { ...rev, snapshot, status: "saved", savedAt: stamp, decidedAt: stamp } },
+    };
+  }
+  return next;
+}
+
+export function approveRevision(
+  state: WorkspaceState,
+  ctx: DomainContext,
+  args: { revisionId: string; actor: Actor },
+): Mutation<Revision> {
+  requireUser(args.actor);
+  const rev = requirePending(state, args.revisionId);
+  requireCurrent(state, rev);
+  const next = approveMany(state, ctx, [rev.id]);
+  return { state: next, value: next.revisions[rev.id] };
+}
+
+export function rejectRevision(
+  state: WorkspaceState,
+  ctx: DomainContext,
+  args: { revisionId: string; actor: Actor },
+): Mutation<Revision> {
+  requireUser(args.actor);
+  const rev = requirePending(state, args.revisionId);
+  const rejected: WorkspaceState = {
+    ...state,
+    revisions: { ...state.revisions, [rev.id]: { ...rev, status: "rejected", decidedAt: ctx.now() } },
+  };
+  // A rejected create leaves the memory never saved: its pending links can never be approved.
+  const next = rejectOrphanedRelations(rejected, ctx, rev.memoryId);
+  return { state: next, value: next.revisions[rev.id] };
+}
+
+/** Optional selection so a UI can act on exactly the items the user saw. */
+export interface BulkFilter {
+  /** Only these pending revisions (omit = every pending revision; [] = none). */
+  revisionIds?: string[];
+  /** Only these pending relations (omit = every pending relation; [] = none). */
+  relationIds?: string[];
+}
+
+export interface ApproveAllResult {
+  approvedRevisionIds: string[];
+  approvedRelationIds: string[];
+  /** Pending links left pending because an endpoint has no saved revision after this approval. */
+  skippedRelationIds: string[];
+  /** Filter ids that were unknown or no longer pending (ignored, not an error). */
+  ignoredIds: string[];
+}
+
+export interface RejectAllResult {
+  rejectedRevisionIds: string[];
+  rejectedRelationIds: string[];
+  ignoredIds: string[];
+}
+
+function selectPending(state: WorkspaceState, filter: BulkFilter): { revIds: string[]; relIds: string[]; ignored: string[] } {
+  const pendingRevs = pendingChanges(state).map((c) => c.revisionId);
+  const pendingRels = Object.values(state.relations)
+    .filter((r) => r.status === "pending")
+    .map((r) => r.id);
+  const pick = (all: string[], wanted: string[] | undefined, ignored: string[]) => {
+    if (wanted === undefined) return all;
+    const set = new Set(all);
+    const wantSet = new Set(wanted);
+    for (const id of wantSet) if (!set.has(id)) ignored.push(id);
+    return all.filter((id) => wantSet.has(id));
+  };
+  const ignored: string[] = [];
+  return {
+    revIds: pick(pendingRevs, filter.revisionIds, ignored),
+    relIds: pick(pendingRels, filter.relationIds, ignored),
+    ignored,
+  };
+}
 
 /**
- * Commits ALL pending drafts of a branch atomically: every check runs before any
- * state is produced, and the result is a single new state object (all or nothing).
+ * Approves every selected pending revision and every selected pending relation that can be approved.
+ *  - atomic for real inconsistencies: an outdated proposal ("proposal_outdated") aborts everything;
+ *  - a pending link whose endpoint has no saved revision once the revisions are approved (never-saveable,
+ *    or its memory is outside the selection) is SKIPPED (stays pending) and reported, never blocking the rest.
+ * Selection: see BulkFilter (omitted = all of that kind; unknown / stale ids are ignored and reported).
  */
-export function commitDrafts(
+export function approveAllDetailed(
   state: WorkspaceState,
   ctx: DomainContext,
-  args: { message: string; author: string; branchId?: string },
-): Mutation<Commit> {
-  const branchId = args.branchId ?? state.currentBranchId;
-  const branch = getBranch(state, branchId);
-  const message = requireText(args.message, "version note");
-  if (state.pendingMerge && state.pendingMerge.targetBranchId === branchId) {
-    throw new DomainError("merge_in_progress", "Resolve or abort the in-progress merge first");
-  }
-  const changes = pendingChanges(state, branchId);
-  if (changes.length === 0) throw new DomainError("nothing_to_commit", "Nothing to save: no pending drafts");
-
-  const commit: Commit = {
-    id: ctx.newId("commit"),
-    branchId,
-    parentIds: branch.headCommitId ? [branch.headCommitId] : [],
-    message,
-    author: args.author,
-    timestamp: ctx.now(),
-    changes: changes.map((c) => ({ memoryId: c.memoryId, revisionId: c.revisionId, kind: c.kind })),
-  };
-  // Stamp commitId on the committed revisions AND the superseded drafts they were built on
-  // (their parentRevisionId chain), so memoryHistory never shows an unstamped intermediate.
-  // Drafts the commit does not reference (e.g. a no-op draft equal to the committed state)
-  // are left untouched: they stay invisible to history and cannot be committed by mistake.
-  const stamp = new Set<string>();
-  for (const c of changes) {
-    let cur: Revision | undefined = safeGet(state.revisions, c.revisionId);
-    while (cur && cur.commitId === null && cur.branchId === branchId && !stamp.has(cur.id)) {
-      stamp.add(cur.id);
-      cur = safeGet(state.revisions, cur.parentRevisionId);
-    }
-  }
-  const revisions: Record<string, Revision> = {};
-  for (const [id, r] of Object.entries(state.revisions)) {
-    revisions[id] = stamp.has(id) ? { ...r, commitId: commit.id } : r;
+  args: { actor: Actor } & BulkFilter,
+): Mutation<ApproveAllResult> {
+  requireUser(args.actor);
+  const { revIds, relIds, ignored } = selectPending(state, args);
+  for (const id of revIds) requireCurrent(state, getRevision(state, id));
+  const approved = approveMany(state, ctx, revIds);
+  const ok: string[] = [];
+  const skipped: string[] = [];
+  for (const id of relIds) {
+    const rel = approved.relations[id];
+    (hasSavedRevision(approved, rel.fromId) && hasSavedRevision(approved, rel.toId) ? ok : skipped).push(id);
   }
   return {
-    state: {
-      ...state,
-      revisions,
-      commits: { ...state.commits, [commit.id]: commit },
-      branches: { ...state.branches, [branchId]: { ...branch, headCommitId: commit.id } },
-    },
-    value: commit,
+    state: approveRelationsIn(approved, ok, () => ctx.now()),
+    value: { approvedRevisionIds: revIds, approvedRelationIds: ok, skippedRelationIds: skipped, ignoredIds: ignored },
   };
 }
 
-export function createBranch(
+/** Like approveAllDetailed but returns only the approved REVISION ids (approved links are not listed). */
+export function approveAll(
   state: WorkspaceState,
   ctx: DomainContext,
-  args: { name: string; fromCommitId?: string | null; switchTo?: boolean; id?: string },
-): Mutation<Branch> {
-  const name = requireText(args.name, "branch name");
-  if (Object.values(state.branches).some((b) => b.name === name)) {
-    throw new DomainError("duplicate_branch", `Branch name already exists: ${name}`);
+  args: { actor: Actor } & BulkFilter,
+): Mutation<string[]> {
+  const r = approveAllDetailed(state, ctx, args);
+  return { state: r.state, value: r.value.approvedRevisionIds };
+}
+
+/** Rejects every selected pending revision and relation (records are kept), atomically. */
+export function rejectAllDetailed(
+  state: WorkspaceState,
+  ctx: DomainContext,
+  args: { actor: Actor } & BulkFilter,
+): Mutation<RejectAllResult> {
+  requireUser(args.actor);
+  const { revIds, relIds, ignored } = selectPending(state, args);
+  const revisions = { ...state.revisions };
+  const memoryIds = new Set<string>();
+  for (const id of revIds) {
+    revisions[id] = { ...revisions[id], status: "rejected", decidedAt: ctx.now() };
+    memoryIds.add(revisions[id].memoryId);
   }
-  const from =
-    args.fromCommitId === undefined ? getBranch(state, state.currentBranchId).headCommitId : args.fromCommitId;
-  if (from !== null) getCommit(state, from);
-  const branch: Branch = { id: args.id ?? ctx.newId("branch"), name, headCommitId: from, baseCommitId: from };
-  assertSafeId(branch.id, "branch");
-  if (safeGet(state.branches, branch.id)) throw new DomainError("duplicate_id", `Branch id exists: ${branch.id}`);
-  return {
-    state: {
-      ...state,
-      branches: { ...state.branches, [branch.id]: branch },
-      currentBranchId: args.switchTo ? branch.id : state.currentBranchId,
-    },
-    value: branch,
-  };
+  let next = rejectRelationsIn({ ...state, revisions }, relIds, () => ctx.now());
+  for (const m of memoryIds) next = rejectOrphanedRelations(next, ctx, m);
+  return { state: next, value: { rejectedRevisionIds: revIds, rejectedRelationIds: relIds, ignoredIds: ignored } };
 }
 
-export function switchBranch(state: WorkspaceState, args: { branchId: string }): Mutation {
-  getBranch(state, args.branchId);
-  return { state: { ...state, currentBranchId: args.branchId }, value: undefined };
+/** Like rejectAllDetailed but returns only the rejected REVISION ids. */
+export function rejectAll(
+  state: WorkspaceState,
+  ctx: DomainContext,
+  args: { actor: Actor } & BulkFilter,
+): Mutation<string[]> {
+  const r = rejectAllDetailed(state, ctx, args);
+  return { state: r.state, value: r.value.rejectedRevisionIds };
 }
-

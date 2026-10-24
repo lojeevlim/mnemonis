@@ -3,7 +3,8 @@ import { MemoryRouter } from "react-router-dom";
 import { ToastProvider } from "../../components/ToastProvider";
 import { useWorkspace } from "../../stores/workspaceStore";
 import { resetWorkspace, seedLocalProfile } from "../../test/helpers";
-import { RUN_LOG_KEY } from "../agents/runLog";
+import { LEGACY_CORRUPT_BACKUP_KEY, LEGACY_STORAGE_KEY } from "../../data/localRepository";
+import { LEGACY_RUN_LOG_KEY, RUN_LOG_KEY } from "../health/runLog";
 import { AuthContextProvider } from "../auth/AuthContext";
 import { AUTH_STORAGE_KEY } from "../auth/localAuthProvider";
 import { SettingsPage } from "./SettingsPage";
@@ -78,6 +79,7 @@ describe("Settings", () => {
 
     upload(exported!);
     expect(await screen.findByText("Replace your workspace with this file?")).toBeInTheDocument();
+    expect(screen.getByText(/backup\.json contains 0 memories and 0 saved changes\./)).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
     expect(memoryCount()).toBe(1);
 
@@ -96,10 +98,13 @@ describe("Settings", () => {
     await waitFor(() => expect(memoryCount()).toBeGreaterThan(0));
   });
 
-  it("clears all local data (workspace, profile, run log) only after confirmation", async () => {
+  it("clears all local data (workspace, profile, run logs, legacy v1 data) only after confirmation", async () => {
     await resetWorkspace({ seed: true });
     seedLocalProfile();
     localStorage.setItem(RUN_LOG_KEY, "[]");
+    localStorage.setItem(LEGACY_RUN_LOG_KEY, "[]");
+    localStorage.setItem(LEGACY_STORAGE_KEY, '{"schemaVersion":1}');
+    localStorage.setItem(LEGACY_CORRUPT_BACKUP_KEY, "{broken");
     renderPage();
     fireEvent.click(screen.getByRole("button", { name: "Clear all local data" }));
     expect(await screen.findByText("Clear all local data?")).toBeInTheDocument();
@@ -111,6 +116,9 @@ describe("Settings", () => {
     await waitFor(() => expect(memoryCount()).toBe(0));
     expect(localStorage.getItem(AUTH_STORAGE_KEY)).toBeNull();
     expect(localStorage.getItem(RUN_LOG_KEY)).toBeNull();
+    expect(localStorage.getItem(LEGACY_RUN_LOG_KEY)).toBeNull();
+    expect(localStorage.getItem(LEGACY_STORAGE_KEY)).toBeNull();
+    expect(localStorage.getItem(LEGACY_CORRUPT_BACKUP_KEY)).toBeNull();
   });
 
   it("shows storage status and the local-mode statement", () => {

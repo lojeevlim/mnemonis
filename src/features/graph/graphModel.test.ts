@@ -18,7 +18,7 @@ const node = (id: string, extra: Partial<GraphNode> = {}): GraphNode => ({
   id,
   title: id.toUpperCase(),
   type: "fact",
-  status: "committed",
+  status: "saved",
   archived: false,
   collectionId: null,
   tags: [],
@@ -37,10 +37,10 @@ const edge = (source: string, target: string): GraphEdge => ({
 describe("buildGraph (seed)", () => {
   const state = createSeedWorkspace();
 
-  it("builds nodes from current-branch memories and edges only from stored relations", () => {
+  it("builds nodes from saved memories and edges only from stored relations", () => {
     const g = buildGraph(state);
     expect(g.nodes).toHaveLength(18);
-    expect(g.nodes.some((n) => n.id === "mem_research_ranking")).toBe(false); // lives on another branch
+    expect(g.nodes.some((n) => n.id === "mem_research_ranking")).toBe(false); // only a pending proposal in the Inbox: not saved, so not in the graph
     expect(g.edges).toHaveLength(listRelations(state).length);
     expect(g.edges).toHaveLength(16);
     const ids = new Set(g.nodes.map((n) => n.id));
@@ -64,8 +64,10 @@ describe("buildGraph (seed)", () => {
   });
 
   it("hides archived memories (and their edges) unless toggled", () => {
-    const ctx = createSequentialContext("2026-10-01T00:00:00.000Z");
-    const archived = archiveMemory(state, ctx, { id: "mem_dec_zustand", author: "t" }).state;
+    // Ids must not collide with the seed's own sequential ids (rev_1, ...).
+    const base = createSequentialContext("2026-10-01T00:00:00.000Z");
+    const ctx = { now: base.now, newId: (prefix: string) => `test_${base.newId(prefix)}` };
+    const archived = archiveMemory(state, ctx, { id: "mem_dec_zustand", actor: { kind: "user", name: "t" } }).state;
     const hidden = buildGraph(archived);
     expect(hidden.nodes.some((n) => n.id === "mem_dec_zustand")).toBe(false);
     expect(hidden.edges).toHaveLength(14); // two relations touched it
@@ -96,7 +98,7 @@ describe("pure helpers", () => {
   it("filters by collection, tag, type and status, keeping only inner edges", () => {
     const nodes = [
       node("a", { collectionId: "c1", tags: ["X"], type: "fact" }),
-      node("b", { collectionId: "c1", tags: ["y"], type: "task", status: "draft" }),
+      node("b", { collectionId: "c1", tags: ["y"], type: "task", status: "pending" }),
       node("c", { collectionId: "c2", tags: ["x"], type: "fact" }),
     ];
     const g: Graph = { nodes, edges: [edge("a", "b"), edge("a", "c")] };
@@ -105,7 +107,7 @@ describe("pure helpers", () => {
     expect(filterGraph(g, { collectionId: "c1" }).edges).toHaveLength(1);
     expect(filterGraph(g, { tag: "x" }).nodes.map((n) => n.id)).toEqual(["a", "c"]);
     expect(filterGraph(g, { type: "task" }).nodes.map((n) => n.id)).toEqual(["b"]);
-    expect(filterGraph(g, { status: "draft" }).nodes.map((n) => n.id)).toEqual(["b"]);
+    expect(filterGraph(g, { status: "pending" }).nodes.map((n) => n.id)).toEqual(["b"]);
     expect(filterGraph(g, { type: "fact", collectionId: "c2" }).nodes.map((n) => n.id)).toEqual(["c"]);
   });
 

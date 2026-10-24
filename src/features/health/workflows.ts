@@ -1,11 +1,11 @@
 /**
- * Deterministic "agent" workflows. Framework-free and LLM-free: plain heuristics
- * over the current memories that emit reviewable PROPOSALS. Nothing here mutates
- * state; applying a proposal is done separately and only ever creates drafts.
+ * Memory Health checks (Organize, Review). Framework-free, rule-based and LLM-free: plain
+ * heuristics over the current memories that emit reviewable PROPOSALS. Nothing here mutates
+ * state; applying a proposal is done separately and only ever sends it to the Inbox.
  */
 import type { Memory, Relation } from "../../domain";
 
-export type AgentName = "librarian" | "reviewer";
+export type CheckName = "organize" | "review";
 
 export type ProposalKind =
   | "duplicate"
@@ -21,7 +21,7 @@ export type ProposalKind =
 
 export type Confidence = "high" | "medium" | "low";
 
-/** A single change an Apply would perform (drafts only; relations are additive). */
+/** A single change an Apply would perform (sent to the Inbox; links are additive relations). */
 export type ProposalAction =
   | { kind: "add-tag"; memoryId: string; tag: string }
   | { kind: "set-collection"; memoryId: string; collectionId: string }
@@ -31,7 +31,7 @@ export type ProposalAction =
 export interface Proposal {
   /** Deterministic: the same finding gets the same id on every run. */
   id: string;
-  agent: AgentName;
+  check: CheckName;
   kind: ProposalKind;
   finding: string;
   evidence: string[];
@@ -54,11 +54,11 @@ export interface WorkflowInput {
   now: number;
 }
 
-export interface LibrarianOptions {
+export interface OrganizeOptions {
   /** Similarity (0..1) at or above which two memories are flagged. */
   duplicateThreshold: number;
 }
-export interface ReviewerOptions {
+export interface ReviewOptions {
   staleDays: number;
 }
 
@@ -141,9 +141,9 @@ function mostSimilar(m: Memory, others: Memory[], min: number, filter: (o: Memor
 
 const pct = (n: number) => `${Math.round(n * 100)}%`;
 
-// ---- Librarian ---------------------------------------------------------------
+// ---- Organize ---------------------------------------------------------------
 
-export function runLibrarian(input: WorkflowInput, opts: LibrarianOptions): Proposal[] {
+export function runOrganize(input: WorkflowInput, opts: OrganizeOptions): Proposal[] {
   const memories = active(input.memories).sort(byId);
   const { relations, collections } = input;
   const out: Proposal[] = [];
@@ -164,27 +164,27 @@ export function runLibrarian(input: WorkflowInput, opts: LibrarianOptions): Prop
       ];
       if (exact) {
         out.push({
-          id: `librarian:duplicate:${pairKey(a.id, b.id)}`,
-          agent: "librarian",
+          id: `organize:duplicate:${pairKey(a.id, b.id)}`,
+          check: "organize",
           kind: "duplicate",
           finding: `Duplicate memories: ${quote(a)} and ${quote(b)}`,
           evidence,
           confidence: "high",
           memoryIds: [older.id, newer.id],
           action: { kind: "archive", memoryId: older.id },
-          suggestion: `Archive the older copy ${quote(older)} (as a draft you can review and undo).`,
+          suggestion: `Archive the older copy ${quote(older)} (sent to the Inbox for your review).`,
         });
       } else if (!relatedPair(relations, a.id, b.id)) {
         out.push({
-          id: `librarian:near-duplicate:${pairKey(a.id, b.id)}`,
-          agent: "librarian",
+          id: `organize:near-duplicate:${pairKey(a.id, b.id)}`,
+          check: "organize",
           kind: "near-duplicate",
           finding: `Near-duplicate memories: ${quote(a)} and ${quote(b)}`,
           evidence,
           confidence: score >= 0.8 ? "high" : "medium",
           memoryIds: [a.id, b.id],
           action: { kind: "link", fromId: a.id, toId: b.id, label: "similar to" },
-          suggestion: `Link them as related ("similar to") so they can be reviewed together or merged by hand.`,
+          suggestion: `Link them as related ("similar to") so they can be reviewed together or combined by hand.`,
         });
       }
     }
@@ -196,8 +196,8 @@ export function runLibrarian(input: WorkflowInput, opts: LibrarianOptions): Prop
     if (m.tags.length === 0) {
       const tag = m.type.replace(/_/g, "-");
       out.push({
-        id: `librarian:missing-tags:${m.id}`,
-        agent: "librarian",
+        id: `organize:missing-tags:${m.id}`,
+        check: "organize",
         kind: "missing-tags",
         finding: `${quote(m)} has no tags`,
         evidence: [`Type is “${m.type}”.`],
@@ -211,8 +211,8 @@ export function runLibrarian(input: WorkflowInput, opts: LibrarianOptions): Prop
       const best = mostSimilar(m, withCollection, 0.1);
       const col = best && collections.find((c) => c.id === best.memory.collectionId);
       out.push({
-        id: `librarian:missing-collection:${m.id}`,
-        agent: "librarian",
+        id: `organize:missing-collection:${m.id}`,
+        check: "organize",
         kind: "missing-collection",
         finding: `${quote(m)} is not in a collection`,
         evidence: best && col ? [`Most similar memory ${quote(best.memory)} (${pct(best.score)}) is in “${col.name}”.`] : ["No similar memory in a collection to learn from."],
@@ -224,8 +224,8 @@ export function runLibrarian(input: WorkflowInput, opts: LibrarianOptions): Prop
     }
     if (m.content.trim() === "") {
       out.push({
-        id: `librarian:empty-content:${m.id}`,
-        agent: "librarian",
+        id: `organize:empty-content:${m.id}`,
+        check: "organize",
         kind: "empty-content",
         finding: `${quote(m)} has no content`,
         evidence: ["The content is empty or whitespace."],
@@ -237,8 +237,8 @@ export function runLibrarian(input: WorkflowInput, opts: LibrarianOptions): Prop
     }
     if (m.source.trim() === "") {
       out.push({
-        id: `librarian:missing-source:${m.id}`,
-        agent: "librarian",
+        id: `organize:missing-source:${m.id}`,
+        check: "organize",
         kind: "missing-source",
         finding: `${quote(m)} has no source`,
         evidence: ["The source field is empty (it cannot be edited after creation)."],
@@ -256,8 +256,8 @@ export function runLibrarian(input: WorkflowInput, opts: LibrarianOptions): Prop
     if (connected.has(m.id)) continue;
     const best = mostSimilar(m, memories, 0.1);
     out.push({
-      id: `librarian:isolated:${m.id}`,
-      agent: "librarian",
+      id: `organize:isolated:${m.id}`,
+      check: "organize",
       kind: "isolated",
       finding: `${quote(m)} is isolated (no relations)`,
       evidence: best ? [`Most similar memory: ${quote(best.memory)} (${pct(best.score)}).`] : ["No similar memory found to link to."],
@@ -271,9 +271,9 @@ export function runLibrarian(input: WorkflowInput, opts: LibrarianOptions): Prop
   return out;
 }
 
-// ---- Reviewer ------------------------------------------------------------------
+// ---- Review ------------------------------------------------------------------
 
-export function runReviewer(input: WorkflowInput, opts: ReviewerOptions): Proposal[] {
+export function runReview(input: WorkflowInput, opts: ReviewOptions): Proposal[] {
   const memories = active(input.memories).sort(byId);
   const { relations, now } = input;
   const out: Proposal[] = [];
@@ -284,8 +284,8 @@ export function runReviewer(input: WorkflowInput, opts: ReviewerOptions): Propos
     if (!Number.isNaN(t) && t < cutoff) {
       const days = Math.floor((now - t) / 86_400_000);
       out.push({
-        id: `reviewer:stale:${m.id}`,
-        agent: "reviewer",
+        id: `review:stale:${m.id}`,
+        check: "review",
         kind: "stale",
         finding: `${quote(m)} may be stale`,
         evidence: [`Last updated ${m.updatedAt.slice(0, 10)} (${days} days ago; threshold ${opts.staleDays} days).`],
@@ -297,8 +297,8 @@ export function runReviewer(input: WorkflowInput, opts: ReviewerOptions): Propos
     }
     if (!m.provenance?.origin?.trim() || !m.provenance?.createdBy?.trim()) {
       out.push({
-        id: `reviewer:missing-provenance:${m.id}`,
-        agent: "reviewer",
+        id: `review:missing-provenance:${m.id}`,
+        check: "review",
         kind: "missing-provenance",
         finding: `${quote(m)} has incomplete provenance`,
         evidence: [`origin: “${m.provenance?.origin ?? ""}”, created by: “${m.provenance?.createdBy ?? ""}”.`],
@@ -329,8 +329,8 @@ export function runReviewer(input: WorkflowInput, opts: ReviewerOptions): Propos
       if (relatedPair(relations, a.id, b.id, "possible contradiction")) continue;
       const [neg, pos] = negA ? [a, b] : [b, a];
       out.push({
-        id: `reviewer:contradiction:${pairKey(a.id, b.id)}`,
-        agent: "reviewer",
+        id: `review:contradiction:${pairKey(a.id, b.id)}`,
+        check: "review",
         kind: "contradiction",
         finding: `Possible contradiction between ${quote(a)} and ${quote(b)}`,
         evidence: [

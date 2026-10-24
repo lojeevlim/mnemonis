@@ -1,11 +1,7 @@
 import { DomainError, type DomainContext } from "./context";
-import {
-  getBranch,
-  getRevision,
-  latestRevisionId,
-  listMemories,
-} from "./queries";
+import { currentSavedRevision, getMemory, getRevision, pendingRevisionFor } from "./queries";
 import type {
+  Actor,
   Memory,
   MemoryProvenance,
   MemorySnapshot,
@@ -15,7 +11,9 @@ import type {
   Revision,
   WorkspaceState,
 } from "./types";
-import { assertSafeId, cloneJson, deepEqual, normalizeTags, requireText, safeGet } from "./util";
+import { assertActor, assertIdentityLimits, assertWithinLimits } from "./limits";
+import { describeChange } from "./versioning";
+import { assertSafeId, cloneJson, deepEqual, freshId, normalizeTags, requireText, safeGet } from "./util";
 
 export interface CreateMemoryInput {
   /** Optional explicit id (used by seed data); must be unused. */
@@ -28,20 +26,12 @@ export interface CreateMemoryInput {
   source?: string;
   provenance?: MemoryProvenance;
   metadata?: Metadata;
-  author: string;
-  branchId?: string;
+  actor: Actor;
 }
 
 export type MemoryPatch = Partial<
   Pick<MemorySnapshot, "title" | "content" | "type" | "tags" | "collectionId" | "metadata">
 >;
-
-function guardBranchWritable(state: WorkspaceState, branchId: string): void {
-  getBranch(state, branchId);
-  if (state.pendingMerge && state.pendingMerge.targetBranchId === branchId) {
-    throw new DomainError("merge_in_progress", "Resolve or abort the in-progress merge first");
-  }
-}
 
 export function checkCollection(state: WorkspaceState, collectionId: string | null): void {
   if (collectionId !== null && !safeGet(state.collections, collectionId)) {
@@ -49,42 +39,85 @@ export function checkCollection(state: WorkspaceState, collectionId: string | nu
   }
 }
 
-/** Appends a new (draft) revision. Never mutates existing revisions. */
-export function appendDraftRevision(
-  state: WorkspaceState,
-  ctx: DomainContext,
-  p: { memoryId: string; branchId: string; snapshot: MemorySnapshot; author: string },
-): Mutation<Revision> {
-  const rev: Revision = {
-    id: ctx.newId("rev"),
-    memoryId: p.memoryId,
-    branchId: p.branchId,
-    snapshot: p.snapshot,
-    parentRevisionId: latestRevisionId(state, p.branchId, p.memoryId),
-    commitId: null,
-    createdAt: ctx.now(),
-    author: p.author,
-  };
-  return { state: { ...state, revisions: { ...state.revisions, [rev.id]: rev } }, value: rev };
+/**
+ * The snapshot a write by `actor` builds on. A user always edits what they SEE (the saved
+ * content). An agent continues its own open proposal (so successive tweaks accumulate); otherwise
+ * it starts from the saved content (or, for a memory never saved, from its proposal). A USER write on a
+ * memory that has no saved revision throws "not_saved".
+ */
+function baseSnapshot(state: WorkspaceState, memoryId: string, actor: Actor): MemorySnapshot {
+  const saved = currentSavedRevision(state, memoryId);
+  const pending = pendingRevisionFor(state, memoryId);
+  if (actor.kind === "agent" && pending && pending.author === actor.name) return pending.snapshot;
+  if (actor.kind === "user" && !saved && pending) {
+    // The user sees nothing to edit yet: they decide on the proposal instead of silently saving agent content.
+    throw new DomainError("not_saved", "This memory has not been saved yet: approve or reject its proposal instead");
+  }
+  const base = saved?.snapshot ?? pending?.snapshot;
+  if (!base) throw new DomainError("memory_not_found", `Memory not found: ${memoryId}`);
+  return base;
 }
 
-function currentSnapshot(state: WorkspaceState, branchId: string, memoryId: string): MemorySnapshot {
-  const rid = latestRevisionId(state, branchId, memoryId);
-  if (!rid) throw new DomainError("memory_not_found", `Memory not found on branch ${branchId}: ${memoryId}`);
-  return getRevision(state, rid).snapshot;
+/**
+ * The ONLY write path. Appends an immutable revision, never mutating existing snapshots.
+ *  - user actor: saved immediately (savedAt = decidedAt = now); any open proposal is superseded.
+ *  - agent actor: PENDING proposal based on the current saved revision; an older proposal for the
+ *    same memory is superseded. Agents never save.
+ * No-op writes create nothing (value null).
+ */
+export function appendRevision(
+  state: WorkspaceState,
+  ctx: DomainContext,
+  p: { memoryId: string; snapshot: MemorySnapshot; actor: Actor; note?: string },
+): Mutation<Revision | null> {
+  assertActor(p.actor);
+  const saved = currentSavedRevision(state, p.memoryId);
+  const pending = pendingRevisionFor(state, p.memoryId);
+  const hasBase = saved || pending;
+  const base = hasBase ? baseSnapshot(state, p.memoryId, p.actor) : undefined;
+  assertWithinLimits(p.snapshot, p.actor, base);
+  if (base && deepEqual(base, p.snapshot)) return { state, value: null };
+
+  const now = ctx.now();
+  const revisions = { ...state.revisions };
+  if (pending) revisions[pending.id] = { ...pending, status: "superseded", decidedAt: now };
+
+  // An agent taking back its own proposal (snapshot == saved) just withdraws it.
+  if (p.actor.kind === "agent" && saved && deepEqual(saved.snapshot, p.snapshot)) {
+    return { state: { ...state, revisions }, value: null };
+  }
+
+  const isUser = p.actor.kind === "user";
+  const rev: Revision = {
+    id: freshId(ctx, "rev", (id) => Object.hasOwn(state.revisions, id)),
+    memoryId: p.memoryId,
+    snapshot: p.snapshot,
+    parentRevisionId: saved?.id ?? null,
+    createdAt: now,
+    author: p.actor.name,
+    origin: isUser ? "user" : "agent",
+    status: isUser ? "saved" : "pending",
+    // "Created" until a first revision is saved, even when an agent keeps editing its own pending create.
+    note: p.note ?? describeChange(saved?.snapshot, p.snapshot),
+    savedAt: isUser ? now : null,
+    decidedAt: isUser ? now : null,
+  };
+  revisions[rev.id] = rev;
+  return { state: { ...state, revisions }, value: rev };
 }
+
+const view = (state: WorkspaceState, id: string): Memory => getMemory(state, id) as Memory;
 
 export function createMemory(
   state: WorkspaceState,
   ctx: DomainContext,
   input: CreateMemoryInput,
 ): Mutation<Memory> {
-  const branchId = input.branchId ?? state.currentBranchId;
-  guardBranchWritable(state, branchId);
+  assertActor(input.actor);
   const title = requireText(input.title, "title");
   const collectionId = input.collectionId ?? null;
   checkCollection(state, collectionId);
-  const id = input.id ?? ctx.newId("mem");
+  const id = input.id ?? freshId(ctx, "mem", (x) => Object.hasOwn(state.memories, x));
   assertSafeId(id, "memory");
   if (safeGet(state.memories, id)) throw new DomainError("duplicate_id", `Memory id already exists: ${id}`);
   const createdAt = ctx.now();
@@ -92,7 +125,7 @@ export function createMemory(
     id,
     createdAt,
     source: input.source ?? "manual",
-    provenance: input.provenance ?? { origin: "user", createdBy: input.author },
+    provenance: input.provenance ?? { origin: input.actor.kind, createdBy: input.actor.name },
   };
   const snapshot: MemorySnapshot = {
     title,
@@ -103,37 +136,19 @@ export function createMemory(
     archived: false,
     metadata: cloneJson(input.metadata ?? {}),
   };
+  assertIdentityLimits(identity);
   const withIdentity: WorkspaceState = { ...state, memories: { ...state.memories, [id]: identity } };
-  const { state: next } = appendDraftRevision(withIdentity, ctx, {
-    memoryId: id,
-    branchId,
-    snapshot,
-    author: input.author,
-  });
-  return { state: next, value: listMemories(next, branchId).find((m) => m.id === id) as Memory };
-}
-
-function applySnapshot(
-  state: WorkspaceState,
-  ctx: DomainContext,
-  memoryId: string,
-  branchId: string,
-  author: string,
-  snapshot: MemorySnapshot,
-): WorkspaceState {
-  const before = currentSnapshot(state, branchId, memoryId);
-  if (deepEqual(before, snapshot)) return state; // no-op edits do not create revisions
-  return appendDraftRevision(state, ctx, { memoryId, branchId, snapshot, author }).state;
+  const { state: next } = appendRevision(withIdentity, ctx, { memoryId: id, snapshot, actor: input.actor });
+  return { state: next, value: view(next, id) };
 }
 
 export function updateMemory(
   state: WorkspaceState,
   ctx: DomainContext,
-  args: { id: string; patch: MemoryPatch; author: string; branchId?: string },
+  args: { id: string; patch: MemoryPatch; actor: Actor },
 ): Mutation<Memory> {
-  const branchId = args.branchId ?? state.currentBranchId;
-  guardBranchWritable(state, branchId);
-  const before = currentSnapshot(state, branchId, args.id);
+  assertActor(args.actor);
+  const before = baseSnapshot(state, args.id, args.actor);
   if (before.archived) throw new DomainError("memory_archived", "Restore the memory before editing it");
   const { patch } = args;
   const snapshot: MemorySnapshot = {
@@ -146,57 +161,64 @@ export function updateMemory(
     ...(patch.metadata !== undefined && { metadata: cloneJson(patch.metadata) }),
   };
   checkCollection(state, snapshot.collectionId);
-  const next = applySnapshot(state, ctx, args.id, branchId, args.author, snapshot);
-  return { state: next, value: listMemories(next, branchId).find((m) => m.id === args.id) as Memory };
+  const { state: next } = appendRevision(state, ctx, { memoryId: args.id, snapshot, actor: args.actor });
+  return { state: next, value: view(next, args.id) };
 }
 
 function setArchived(
   state: WorkspaceState,
   ctx: DomainContext,
-  args: { id: string; author: string; branchId?: string },
+  args: { id: string; actor: Actor },
   archived: boolean,
 ): Mutation<Memory> {
-  const branchId = args.branchId ?? state.currentBranchId;
-  guardBranchWritable(state, branchId);
-  const before = currentSnapshot(state, branchId, args.id);
-  const next = applySnapshot(state, ctx, args.id, branchId, args.author, { ...before, archived });
-  return { state: next, value: listMemories(next, branchId).find((m) => m.id === args.id) as Memory };
+  assertActor(args.actor);
+  const before = baseSnapshot(state, args.id, args.actor);
+  const { state: next } = appendRevision(state, ctx, {
+    memoryId: args.id,
+    snapshot: { ...before, archived },
+    actor: args.actor,
+  });
+  return { state: next, value: view(next, args.id) };
 }
 
-/** Archive as a DRAFT change (soft delete; nothing is ever removed). */
+/** Archive = soft delete (nothing is ever removed). A user archives immediately; an agent proposes it. */
 export const archiveMemory = (
   state: WorkspaceState,
   ctx: DomainContext,
-  args: { id: string; author: string; branchId?: string },
+  args: { id: string; actor: Actor },
 ) => setArchived(state, ctx, args, true);
 
 export const restoreMemory = (
   state: WorkspaceState,
   ctx: DomainContext,
-  args: { id: string; author: string; branchId?: string },
+  args: { id: string; actor: Actor },
 ) => setArchived(state, ctx, args, false);
 
 /**
- * Rollback = append a NEW draft revision restoring an earlier revision's snapshot.
- * History is never rewritten.
+ * Rollback = append a NEW revision restoring an earlier SAVED revision's snapshot (saved at once
+ * for a user, proposed for an agent). History is never rewritten.
  */
 export function rollbackMemory(
   state: WorkspaceState,
   ctx: DomainContext,
-  args: { memoryId: string; toRevisionId: string; author: string; branchId?: string },
+  args: { memoryId: string; toRevisionId: string; actor: Actor },
 ): Mutation<Memory> {
-  const branchId = args.branchId ?? state.currentBranchId;
-  guardBranchWritable(state, branchId);
+  assertActor(args.actor);
   const target = getRevision(state, args.toRevisionId);
   if (target.memoryId !== args.memoryId) {
     throw new DomainError("invalid_input", "Revision does not belong to this memory");
   }
-  currentSnapshot(state, branchId, args.memoryId); // existence check
+  if (target.status !== "saved") throw new DomainError("invalid_input", "Only a saved version can be rolled back to");
+  baseSnapshot(state, args.memoryId, args.actor); // existence check
   const snapshot = cloneJson(target.snapshot);
   if (snapshot.collectionId !== null && !safeGet(state.collections, snapshot.collectionId)) {
     snapshot.collectionId = null;
   }
-  const next = applySnapshot(state, ctx, args.memoryId, branchId, args.author, snapshot);
-  return { state: next, value: listMemories(next, branchId).find((m) => m.id === args.memoryId) as Memory };
+  const { state: next } = appendRevision(state, ctx, {
+    memoryId: args.memoryId,
+    snapshot,
+    actor: args.actor,
+    note: `Rolled back to ${target.savedAt}`,
+  });
+  return { state: next, value: view(next, args.memoryId) };
 }
-

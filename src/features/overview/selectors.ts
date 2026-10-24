@@ -1,36 +1,24 @@
-import {
-  commitLog,
-  getBranch,
-  listMemories,
-  pendingChanges,
-  type Commit,
-  type Memory,
-  type WorkspaceState,
-} from "../../domain";
+import { listMemories, listRelations, pendingCount, timeline, type Memory, type Revision, type WorkspaceState } from "../../domain";
 import { isDemoMemory } from "../../components/memoryMeta";
 
 export interface OverviewStats {
-  branchName: string;
-  /** Non-archived memories on the current branch. */
+  /** Non-archived saved memories. */
   memories: number;
   archived: number;
-  /** Uncommitted changes vs. the branch head. */
-  drafts: number;
-  branches: number;
-  /** Commits reachable from the current branch head. */
-  commits: number;
+  /** Changes and links waiting for review in the Inbox. */
+  pending: number;
+  /** Saved changes (length of the timeline). */
+  saves: number;
 }
 
 export function overviewStats(state: WorkspaceState): OverviewStats {
   const all = listMemories(state);
   const archived = all.filter((m) => m.archived).length;
   return {
-    branchName: getBranch(state, state.currentBranchId).name,
     memories: all.length - archived,
     archived,
-    drafts: pendingChanges(state).length,
-    branches: Object.keys(state.branches).length,
-    commits: commitLog(state).length,
+    pending: pendingCount(state),
+    saves: timeline(state).length,
   };
 }
 
@@ -39,26 +27,18 @@ export function recentChanges(state: WorkspaceState, limit = 6): Memory[] {
   return listMemories(state).slice(0, limit);
 }
 
-export interface RecentCommit {
-  commit: Commit;
-  changeCount: number;
-  /** True when every memory the commit touched is demo data. */
+export interface RecentActivity {
+  revision: Revision;
+  /** True when the memory it changed is demo data. */
   demo: boolean;
 }
 
-export function recentCommits(state: WorkspaceState, limit = 5): RecentCommit[] {
-  return commitLog(state)
-    .slice(0, limit)
-    .map((commit) => ({
-      commit,
-      changeCount: commit.changes.length,
-      demo:
-        commit.changes.length > 0 &&
-        commit.changes.every((ch) => {
-          const id = state.memories[ch.memoryId];
-          return !!id && isDemoMemory(id);
-        }),
-    }));
+/** Latest saved changes across all memories, newest first. */
+export function recentActivity(state: WorkspaceState, limit = 5): RecentActivity[] {
+  return timeline(state, limit).map((revision) => {
+    const identity = state.memories[revision.memoryId];
+    return { revision, demo: !!identity && isDemoMemory(identity) };
+  });
 }
 
 export interface Topic {
@@ -85,7 +65,7 @@ export function frequentTopics(
   const liveIds = new Set(live.map((m) => m.id));
 
   const degree = new Map<string, number>();
-  for (const r of Object.values(state.relations)) {
+  for (const r of listRelations(state)) {
     if (!liveIds.has(r.fromId) || !liveIds.has(r.toId)) continue;
     degree.set(r.fromId, (degree.get(r.fromId) ?? 0) + 1);
     degree.set(r.toId, (degree.get(r.toId) ?? 0) + 1);

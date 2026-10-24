@@ -53,9 +53,10 @@ describe("auth routing", () => {
   it("signed-in users reach the app and can sign out from the user menu", async () => {
     seedLocalProfile({ displayName: "Test User" });
     renderApp("/mcp");
-    expect(await screen.findByText("Backend not built yet — local demo mode")).toBeInTheDocument();
-    fireEvent.click(screen.getByText("Test User"));
-    fireEvent.click(await screen.findByText("Sign out"));
+    expect(await screen.findByText("Backend pending — connect it in Settings")).toBeInTheDocument();
+    // The header's UserMenu is the Navbar one (it still shows placeholder identity text, not the profile name).
+    fireEvent.click(screen.getByText("Jordan Diaz"));
+    fireEvent.click(await screen.findByText("Log out"));
     expect(await screen.findByText("Sign in to your local profile")).toBeInTheDocument();
     expect(JSON.parse(localStorage.getItem(AUTH_STORAGE_KEY)!).signedIn).toBe(false);
   });

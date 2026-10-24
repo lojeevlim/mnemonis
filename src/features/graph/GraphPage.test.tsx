@@ -1,9 +1,12 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
+import { listRelations } from "../../domain";
 import { useWorkspace } from "../../stores/workspaceStore";
 import { nativeSelect, renderAt, resetWorkspace } from "../../test/helpers";
 import { GraphPage } from "./GraphPage";
 
 const store = () => useWorkspace.getState();
+/** Saved relations only: the seed also carries a pending agent link, which the graph must not draw. */
+const savedRelations = () => listRelations(store().state!);
 const renderPage = (path = "/graph") => renderAt(path, "/graph", <GraphPage />);
 const nodeEls = (c: HTMLElement) => [...c.querySelectorAll<SVGGElement>("[data-node-id]")];
 const edgeEls = (c: HTMLElement) => [...c.querySelectorAll<SVGGElement>("[data-edge-id]")];
@@ -32,7 +35,7 @@ describe("Graph: rendering the seed", () => {
   it("draws every memory and only stored relations", () => {
     const { container } = renderPage();
     expect(nodeEls(container)).toHaveLength(18);
-    expect(edgeEls(container)).toHaveLength(Object.keys(store().state!.relations).length);
+    expect(edgeEls(container)).toHaveLength(savedRelations().length);
     expect(edgeEls(container)).toHaveLength(16);
     expect(screen.getByText(/18 memories · 16 relations/)).toBeInTheDocument();
     // Clusters panel: one cluster of 16, two isolated.
@@ -175,7 +178,7 @@ describe("Graph: filters and search", () => {
 describe("Graph: relations", () => {
   it("creates a relation in link mode and persists it", async () => {
     const { container } = renderPage();
-    const before = Object.keys(store().state!.relations).length;
+    const before = savedRelations().length;
     fireEvent.click(screen.getByRole("button", { name: "Link mode" }));
     fireEvent.click(nodeEl(container, "mem_profile"));
     expect(screen.getByText(/Now click the target memory/)).toBeInTheDocument();
@@ -185,7 +188,7 @@ describe("Graph: relations", () => {
     fireEvent.change(screen.getByLabelText("Relation label"), { target: { value: "writes like" } });
     fireEvent.click(screen.getByRole("button", { name: "Create relation" }));
 
-    await waitFor(() => expect(Object.keys(store().state!.relations)).toHaveLength(before + 1));
+    await waitFor(() => expect(savedRelations()).toHaveLength(before + 1));
     const rel = Object.values(store().state!.relations).find((r) => r.label === "writes like")!;
     expect(rel).toMatchObject({ fromId: "mem_profile", toId: "mem_pref_writing", provenance: { origin: "user" } });
     await waitFor(() => expect(edgeEls(container)).toHaveLength(before + 1));
@@ -202,7 +205,7 @@ describe("Graph: relations", () => {
     fireEvent.change(screen.getByLabelText("Relation label"), { target: { value: "decided" } });
     fireEvent.click(screen.getByRole("button", { name: "Create relation" }));
     expect(await screen.findByRole("alert")).toHaveTextContent("Relation already exists");
-    expect(Object.keys(store().state!.relations)).toHaveLength(16);
+    expect(savedRelations()).toHaveLength(16);
   });
 
   it("cancels a pending link by clicking the source again", () => {

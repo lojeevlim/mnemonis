@@ -8,41 +8,41 @@ lojee-ui (0.1.0-alpha.17) facts: needs peers `react@19`, `react-dom@19`, `tailwi
 ## Approach
 **Stack:** Vite + React 19 + TS + React Router + Zustand + Tailwind v4 (`@tailwindcss/vite`) + lojee-ui + lucide-react. Vitest + Testing Library for frontend tests (Playwright deferred until a backend exists).
 
-**Data layer (frontend-only, honest):** a `MemoryRepository` interface (`src/data/repository.ts`) with a single `LocalRepository` implementation (Zustand + localStorage persist). Pure versioning logic (revisions, commits, branches, diff, rollback, merge/conflict) lives in `src/domain/` — framework-free so it can move to the shared backend/MCP service later. A persistent banner states "Local demo mode — not synced to Supabase". Seed data is labeled **Demo**. Auth is a local-mode stub behind an `AuthProvider` interface (Supabase swap later); no fake claims of persistence.
+**Data layer (frontend-only, honest):** a `MemoryRepository` interface (`src/data/repository.ts`) with a single `LocalRepository` implementation (Zustand + localStorage persist). Pure versioning logic (a single timeline of per-memory revisions, diff, rollback, and the pending/approve/reject review flow) lives in `src/domain/` — framework-free so it can move to the shared backend/MCP service later. A persistent banner states "Local demo mode — not synced to Supabase". Seed data is labeled **Demo**. Auth is a local-mode stub behind an `AuthProvider` interface (Supabase swap later); no fake claims of persistence.
 
 **Structure**
 ```
 src/
   app/        router, providers (ThemeProvider), AppShell (collapsible Sidebar, CommandMenu ⌘K)
-  domain/     types, memory ops, search (title/FTS-like/tags), versioning, diff, merge  (+ unit tests)
+  domain/     types, memory ops, search (title/FTS-like/tags), versioning (approve/reject), diff, v1->v2 migration  (+ unit tests)
   data/       repository interface, LocalRepository, seed (labeled demo)
-  stores/     zustand slices (memories, branches/commits, ui)
-  features/   overview, memories, graph, collections, branches, agents, mcp, settings, auth
-  components/ thin wrappers over lojee-ui, MarkdownView, StatusBadge (draft/committed/archived/conflict)
+  stores/     zustand store (workspace state, selectors for pending changes and the timeline)
+  features/   overview, memories, graph, collections, inbox, health, mcp, settings, auth
+  components/ thin wrappers over lojee-ui, MarkdownView, StatusBadge (saved = Long term / pending = Waiting for review / archived)
 docs/IMPLEMENTATION_PLAN.md   (short copy of this plan, per spec)
 .env.example                   (names only; VITE_ vars for future Supabase/MCP URL)
 ```
 
 **Screens (all 8 nav items)**
-1. Overview — stats, recent changes, drafts, commits, branches, top topics, MCP status (shown as "Not connected — backend pending").
-2. Memories — list + filters (type/collection/branch/status), search, create/edit/archive in a detail Drawer/panel, Markdown, tags, relations, revision history, draft→save-version approval.
+1. Overview — stats (memories, waiting for review, archived, saved changes), recent changes, recent activity, top topics, MCP status (shown as "Not connected — backend pending").
+2. Memories — list + filters (type/collection/status), search, create/edit/archive in a detail Drawer/panel, Markdown, tags, relations, revision history with rollback. Your own edits auto-save to Long Term Memory with an automatic note; changes written by agents wait for review (Approve / Reject in the drawer or the Inbox).
 3. Knowledge Graph — **custom** SVG/canvas force layout (own small simulation, no graph lib): zoom/pan, node select → detail panel, create/remove user-defined edges, filters, search, isolated-node highlighting. Edges only from stored relations.
 4. Collections — CRUD + membership view.
-5. Branches & Versions — create branch from version, switch, review unsaved changes, diff view, save version with a note, history, merge with conflict resolution UI, rollback (new revision).
-6. Agents — Librarian (duplicates, missing metadata), Reviewer (stale/contradiction heuristics), Researcher/Sync as clearly labeled "planned"; deterministic runs emit reviewable proposed changes, never auto-commit.
-7. MCP Connections — token UI mock + Claude Code connection instructions, clearly marked "available when backend ships".
+5. Inbox — Inbox section (Short Term Memory: each pending change with diff, author, origin and note; Approve / Reject per item, Approve all / Reject all) and Timeline section (every saved change, newest first). `/branches` redirects here.
+6. Memory Health (`/health`; `/agents` redirects) — rule-based Organize (duplicates, missing metadata) and Review (stale/contradiction heuristics) checks, Researcher/Sync as clearly labeled "planned"; applying a proposal sends it to the Inbox as a pending change, never auto-saved. "Agent" is reserved for real AI writers (MCP, later).
+7. MCP Connections — token UI mock + Claude Code connection instructions, clearly marked "available when backend ships". Planned tools: memory_search/read/list/related/history/status/diff (read) and memory_save/update/link/archive (writes land in the Inbox). Approve/reject are user-only, so there are no such tools.
 8. Settings — profile, theme/accent (lojee ThemeSwitcher), export JSON, clear local data.
 
 **Design:** dark-first, calm neutral surfaces, restrained single accent, compact density, subtle transitions, keyboard accessible, empty/loading/error states via lojee EmptyState/Skeleton. Override lojee tokens only through its CSS variables.
 
 ## Build order (each step runnable)
 1. Scaffold Vite + install deps, Tailwind + lojee theme, ThemeProvider, AppShell, routing, lint/tsc/vitest setup.
-2. Domain + LocalRepository + seed, with unit tests (search, revisions, commit, branch, diff, rollback, merge conflict).
+2. Domain + LocalRepository + seed, with unit tests (search, revisions, auto-save vs pending, approve/reject, diff, rollback, v1 migration).
 3. Memories + Overview + Collections.
-4. Branches/Commits UI.
+4. Inbox (pending review) and Timeline UI.
 5. Knowledge graph.
-6. Agents, MCP, Settings, auth stub.
-7. Frontend tests for key flows (create → edit → save version → rollback; graph link create).
+6. Memory Health, MCP, Settings, auth stub.
+7. Frontend tests for key flows (create → edit (auto-saved) → rollback; agent proposal → approve/reject in the Inbox; graph link create).
 
 Execution follows the user's Haruto workflow: Ren (analysis) → Takumi (implement, one phase at a time) → Daiki (tests/tsc/lint/build) → Akira (review). No git commit/push.
 
@@ -50,6 +50,13 @@ Execution follows the user's Haruto workflow: Ren (analysis) → Takumi (impleme
 Supabase schema/RLS/migrations, MCP server + tokens, Playwright e2e, deployment configs, real auth.
 
 ## Verification
-- `npm run dev` launches; walk through: create memory → edit → save version with a note → branch → conflicting edit → merge/resolve → rollback; link two memories and see edge in graph; search/filter; theme toggle; reload persists local data.
+- `npm run dev` launches; walk through: create memory → edit (auto-saved) → rollback; run a Memory Health check → apply a proposal → approve or reject it in the Inbox; link two memories and see edge in graph; search/filter; theme toggle; reload persists local data.
 - `npm run typecheck`, `npm run lint`, `npm test`, `npm run build` all pass (report actual output).
 - Confirm no secrets in repo; `.env.example` placeholders only.
+
+## Update: single timeline, auto-save, agent Inbox
+Memory lines (branches), compare, merge/integrate and conflicts were removed. There is one timeline of per-memory revisions:
+- The user's own writes are saved at once (Long Term Memory) with an automatic note; rollback appends a new saved revision.
+- Writes by agents (Memory Health today, MCP later) are never saved directly: they become pending revisions (Short Term Memory) shown in the Inbox. Only the user can approve or reject them, one by one or all at once.
+- Stored data is `mnemonis.workspace.v2`. A v1 workspace (`mnemonis.workspace.v1`) is migrated on first load and the v1 key is left untouched; imports accept v1 or v2. Unsaved v1 drafts and the content of other memory lines arrive as pending items in the Inbox.
+- Memory Health "link" proposals still create relations immediately (additive, provenance `process`); making them pending is a later step.

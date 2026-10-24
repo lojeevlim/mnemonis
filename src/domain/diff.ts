@@ -1,4 +1,5 @@
-import { branchTree, commitTree, getRevision, pendingRevisionMap, type Tree } from "./queries";
+import { DomainError } from "./context";
+import { currentSavedRevision, getRevision } from "./queries";
 import { MEMORY_FIELDS, type MemoryFieldName, type MemoryFieldValue, type MemorySnapshot, type WorkspaceState } from "./types";
 import { deepEqual } from "./util";
 
@@ -90,38 +91,18 @@ export function diffSnapshots(
   return out;
 }
 
-export function diffTrees(state: WorkspaceState, from: Tree, to: Tree): MemoryDiff[] {
-  const out: MemoryDiff[] = [];
-  const ids = [...new Set([...Object.keys(from), ...Object.keys(to)])].sort();
-  for (const memoryId of ids) {
-    const rb = from[memoryId];
-    const ra = to[memoryId];
-    if (rb === ra) continue;
-    const before = rb ? getRevision(state, rb).snapshot : undefined;
-    const after = ra ? getRevision(state, ra).snapshot : undefined;
-    const fields = diffSnapshots(before, after);
-    if (fields.length === 0) continue;
-    out.push({ memoryId, kind: !before ? "added" : !after ? "removed" : "modified", fields });
-  }
-  return out;
-}
-
 export function diffRevisions(state: WorkspaceState, fromRevisionId: string, toRevisionId: string): FieldChange[] {
   return diffSnapshots(getRevision(state, fromRevisionId).snapshot, getRevision(state, toRevisionId).snapshot);
 }
 
-export function diffCommits(state: WorkspaceState, fromCommitId: string | null, toCommitId: string | null): MemoryDiff[] {
-  return diffTrees(state, commitTree(state, fromCommitId), commitTree(state, toCommitId));
-}
-
-/** Committed heads of two branches (a -> b). */
-export function diffBranches(state: WorkspaceState, fromBranchId: string, toBranchId: string): MemoryDiff[] {
-  return diffTrees(state, branchTree(state, fromBranchId), branchTree(state, toBranchId));
-}
-
-/** Uncommitted drafts of a branch vs its head commit ("review before commit"). */
-export function diffWorkingTree(state: WorkspaceState, branchId: string = state.currentBranchId): MemoryDiff[] {
-  const to: Tree = { ...branchTree(state, branchId) };
-  for (const [mid, rev] of Object.entries(pendingRevisionMap(state, branchId))) to[mid] = rev.id;
-  return diffTrees(state, branchTree(state, branchId), to);
+/** What approving a pending revision would change: pending snapshot vs the memory's current saved snapshot. */
+export function diffPending(state: WorkspaceState, revisionId: string): MemoryDiff {
+  const rev = getRevision(state, revisionId);
+  if (rev.status !== "pending") throw new DomainError("not_pending", "Only pending changes can be diffed this way");
+  const before = currentSavedRevision(state, rev.memoryId)?.snapshot;
+  return {
+    memoryId: rev.memoryId,
+    kind: before ? "modified" : "added",
+    fields: diffSnapshots(before, rev.snapshot),
+  };
 }

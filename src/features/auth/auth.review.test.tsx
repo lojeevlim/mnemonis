@@ -45,7 +45,7 @@ describe("SignUpPage return path", () => {
     const terms = screen.queryByRole("checkbox");
     if (terms) fireEvent.click(terms);
     fireEvent.click(screen.getByRole("button", { name: "Create local profile" }));
-    expect(await screen.findByText("Backend not built yet — local demo mode")).toBeInTheDocument();
+    expect(await screen.findByText("Backend pending — connect it in Settings")).toBeInTheDocument();
   });
 
   it("an already signed-in user is redirected to `from`", async () => {
@@ -59,6 +59,6 @@ describe("SignUpPage return path", () => {
         </ToastProvider>
       </MemoryRouter>,
     );
-    await waitFor(() => expect(screen.getByText("Backend not built yet — local demo mode")).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByText("Backend pending — connect it in Settings")).toBeInTheDocument());
   });
 });

@@ -1,4 +1,4 @@
-import { DomainError } from "./context";
+import { DomainError, type DomainContext } from "./context";
 
 export function deepEqual(a: unknown, b: unknown): boolean {
   if (a === b) return true;
@@ -60,4 +60,16 @@ export function requireText(value: string | undefined, what: string): string {
 
 export function cloneJson<T>(v: T): T {
   return JSON.parse(JSON.stringify(v)) as T;
+}
+
+/**
+ * A new id that is not yet taken. Regenerates a few times (a clock/counter collision is harmless);
+ * fails with "duplicate_id" rather than ever overwriting an existing record.
+ */
+export function freshId(ctx: DomainContext, prefix: string, taken: (id: string) => boolean): string {
+  for (let i = 0; i < 100; i++) {
+    const id = ctx.newId(prefix);
+    if (!isReservedKey(id) && !taken(id)) return id;
+  }
+  throw new DomainError("duplicate_id", `Could not generate an unused ${prefix} id`);
 }

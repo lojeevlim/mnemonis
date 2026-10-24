@@ -1,10 +1,9 @@
 import { describe, expect, it } from "vitest";
 import { createMemory } from "./memoryOps";
 import { createCollection } from "./relations";
-import { commitDrafts } from "./versioning";
 import { searchWorkspace } from "./search";
-import { archiveMemory } from "./memoryOps";
-import { A, setup } from "./testUtils";
+import { archiveMemory, updateMemory } from "./memoryOps";
+import { AGENT, USER, setup } from "./testUtils";
 
 function build() {
   const { ctx, state } = setup();
@@ -12,13 +11,12 @@ function build() {
   const add = (input: Parameters<typeof createMemory>[2]) => {
     s = createMemory(s, ctx, input).state;
   };
-  add({ id: "alpha", title: "Alpha", content: "nothing here", type: "fact", author: A });
-  add({ id: "m_pg", title: "Postgres", content: "database notes", type: "technical_decision", tags: ["db"], collectionId: "col_work", author: A });
-  add({ id: "m_pg2", title: "Why Postgres over Mongo", content: "relational", type: "technical_decision", tags: ["db", "decision"], author: A });
-  add({ id: "m_body", title: "Notes", content: "We chose alpha twice: alpha alpha", type: "meeting_note", author: A });
-  add({ id: "m_meta", title: "Meta", content: "x", type: "reference", metadata: { owner: "zeta", nested: { k: "quasar" } }, author: A });
-  add({ id: "m_tag", title: "Tagged", content: "x", tags: ["quasar"], author: A });
-  s = commitDrafts(s, ctx, { message: "init", author: A }).state;
+  add({ id: "alpha", title: "Alpha", content: "nothing here", type: "fact", actor: USER });
+  add({ id: "m_pg", title: "Postgres", content: "database notes", type: "technical_decision", tags: ["db"], collectionId: "col_work", actor: USER });
+  add({ id: "m_pg2", title: "Why Postgres over Mongo", content: "relational", type: "technical_decision", tags: ["db", "decision"], actor: USER });
+  add({ id: "m_body", title: "Notes", content: "We chose alpha twice: alpha alpha", type: "meeting_note", actor: USER });
+  add({ id: "m_meta", title: "Meta", content: "x", type: "reference", metadata: { owner: "zeta", nested: { k: "quasar" } }, actor: USER });
+  add({ id: "m_tag", title: "Tagged", content: "x", tags: ["quasar"], actor: USER });
   return { s, ctx };
 }
 
@@ -49,20 +47,33 @@ describe("search", () => {
     expect(searchWorkspace(s, { query: "!!!" }).total).toBe(0);
   });
 
-  it("filters by type, collection, tag, status, branch", () => {
+  it("filters by type, collection, tag and status", () => {
     const { s, ctx } = build();
     expect(searchWorkspace(s, { type: "technical_decision" }).total).toBe(2);
     expect(searchWorkspace(s, { collectionId: "col_work" }).total).toBe(1);
     expect(searchWorkspace(s, { collectionId: null }).total).toBe(5);
     expect(searchWorkspace(s, { tag: "DB" }).total).toBe(2);
-    expect(searchWorkspace(s, { status: "draft" }).total).toBe(0);
-    expect(searchWorkspace(s, { status: "committed" }).total).toBe(6);
-    const arch = archiveMemory(s, ctx, { id: "alpha", author: A }).state;
+    expect(searchWorkspace(s, { status: "pending" }).total).toBe(0);
+    expect(searchWorkspace(s, { status: "saved" }).total).toBe(6);
+    const arch = archiveMemory(s, ctx, { id: "alpha", actor: USER }).state;
     expect(searchWorkspace(arch, {}).total).toBe(5); // archived hidden by default
     expect(searchWorkspace(arch, { includeArchived: true }).total).toBe(6);
-    expect(searchWorkspace(arch, { status: "draft" }).total).toBe(1); // pending archive is a draft
-    expect(() => searchWorkspace(s, { branchId: "ghost" })).toThrow();
-    expect(searchWorkspace(s, { branchId: "main", type: "fact" }).total).toBe(2);
+    expect(searchWorkspace(arch, { status: "archived" }).total).toBe(1);
+    expect(searchWorkspace(s, { type: "fact" }).total).toBe(2);
+  });
+
+  it("flags memories with an open proposal as pending and searches saved content", () => {
+    const { s, ctx } = build();
+    const p = updateMemory(s, ctx, { id: "alpha", patch: { content: "zebra" }, actor: AGENT }).state;
+    expect(searchWorkspace(p, { status: "pending" }).items.map((i) => i.memory.id)).toEqual(["alpha"]);
+    expect(searchWorkspace(p, { query: "zebra" }).total).toBe(0); // proposals are not searchable until approved
+  });
+
+  it("hides never-saved proposals unless includePending is set", () => {
+    const { s, ctx } = build();
+    const p = createMemory(s, ctx, { id: "newone", title: "Brand new", actor: AGENT }).state;
+    expect(searchWorkspace(p, { query: "brand" }).total).toBe(0);
+    expect(searchWorkspace(p, { query: "brand", includePending: true }).items[0].memory.id).toBe("newone");
   });
 
   it("paginates and reports total", () => {

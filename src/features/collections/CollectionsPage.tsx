@@ -71,7 +71,7 @@ export function CollectionsPage() {
     <div className="mx-auto max-w-6xl space-y-3 p-4">
       <PageHeader
         title="Collections"
-        description="Group related memories. Counts exclude archived memories on the current branch."
+        description="Group related memories. Counts exclude archived memories."
         actions={
           <Button size="sm" icon="plus" onClick={() => setDialog({ kind: "create" })}>
             New collection

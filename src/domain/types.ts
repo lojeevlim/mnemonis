@@ -22,7 +22,8 @@ export type BuiltInMemoryType = (typeof BUILT_IN_MEMORY_TYPES)[number];
 /** Open union: built-ins plus any custom type string. */
 export type MemoryType = BuiltInMemoryType | (string & {});
 
-export type MemoryStatus = "draft" | "committed" | "archived" | "conflict";
+/** saved = long term; pending = a proposal is waiting for review (short term). */
+export type MemoryStatus = "saved" | "pending" | "archived";
 
 export interface MemoryProvenance {
   /** e.g. 'user' | 'agent' | 'import' | 'demo' */
@@ -62,25 +63,43 @@ export const MEMORY_FIELDS: readonly MemoryFieldName[] = [
 ];
 export type MemoryFieldValue = string | string[] | boolean | null | Metadata;
 
-/** Materialized view of a memory on one branch (derived, never stored). */
+/** Materialized view of a memory (derived, never stored). */
 export interface Memory extends MemoryIdentity, MemorySnapshot {
   status: MemoryStatus;
-  branchId: string;
+  /** True when an unreviewed proposal (pending revision) exists for this memory. */
+  hasPending: boolean;
+  /** savedAt of the current saved revision (createdAt of the proposal for pending-only memories). */
   updatedAt: string;
-  /** Latest revision visible on the branch (draft or committed). */
+  /** Current saved revision id (the pending revision id for a memory that has never been saved). */
   revisionId: string;
 }
 
+export type RevisionStatus = "saved" | "pending" | "rejected" | "superseded";
+export type Origin = "user" | "agent" | "import" | "system";
+export const REVISION_STATUSES: readonly RevisionStatus[] = ["saved", "pending", "rejected", "superseded"];
+export const ORIGINS: readonly Origin[] = ["user", "agent", "import", "system"];
+
+/** Who performs a write. Agents never save directly: their writes become pending revisions. */
+export interface Actor {
+  kind: "user" | "agent";
+  name: string;
+}
+
+/** The single unit of change: one immutable snapshot of one memory plus its review state. */
 export interface Revision {
   id: string;
   memoryId: string;
-  branchId: string;
   snapshot: MemorySnapshot;
   parentRevisionId: string | null;
-  /** null = uncommitted draft. Stamped exactly once when committed. */
-  commitId: string | null;
   createdAt: string;
   author: string;
+  origin: Origin;
+  status: RevisionStatus;
+  note: string;
+  /** Stamped when the revision becomes saved (user edit or approval). */
+  savedAt: string | null;
+  /** When it was saved / rejected / superseded. */
+  decidedAt: string | null;
 }
 
 export interface RelationProvenance {
@@ -91,6 +110,10 @@ export interface RelationProvenance {
   demo?: boolean;
 }
 
+/** saved = visible link; pending = proposed by an agent, waiting for review; rejected = kept for the record. */
+export type RelationStatus = "saved" | "pending" | "rejected";
+export const RELATION_STATUSES: readonly RelationStatus[] = ["saved", "pending", "rejected"];
+
 export interface Relation {
   id: string;
   fromId: string;
@@ -98,6 +121,10 @@ export interface Relation {
   label: string;
   provenance: RelationProvenance;
   createdAt: string;
+  /** Absent in older stored data (normalised to "saved" on load / migrate / import). */
+  status: RelationStatus;
+  /** When the relation was saved / rejected (null while pending). */
+  decidedAt: string | null;
 }
 
 export interface Collection {
@@ -107,77 +134,14 @@ export interface Collection {
   createdAt: string;
 }
 
-export interface Branch {
-  id: string;
-  name: string;
-  headCommitId: string | null;
-  baseCommitId: string | null;
-}
-
 export type ChangeKind = "create" | "update" | "archive" | "restore";
 
-export interface CommitChange {
-  memoryId: string;
-  revisionId: string;
-  kind: ChangeKind;
-}
-
-/**
- * A commit records changes relative to its FIRST parent. The full snapshot
- * (memoryId -> revisionId) is reconstructed by replaying changes along the
- * first-parent chain (see commitTree / snapshotAtCommit).
- */
-export interface Commit {
-  id: string;
-  branchId: string;
-  parentIds: string[];
-  message: string;
-  author: string;
-  timestamp: string;
-  changes: CommitChange[];
-}
-
-export interface ConflictResolution {
-  choice: "ours" | "theirs" | "manual";
-  value: MemoryFieldValue;
-}
-
-export interface Conflict {
-  id: string;
-  memoryId: string;
-  field: MemoryFieldName;
-  base: MemoryFieldValue | undefined;
-  ours: MemoryFieldValue;
-  theirs: MemoryFieldValue;
-  resolution: ConflictResolution | null;
-}
-
-export interface PendingMerge {
-  sourceBranchId: string;
-  targetBranchId: string;
-  baseCommitId: string | null;
-  message: string;
-  author: string;
-  /** Auto-merged snapshots (conflicted fields default to "ours" until resolved). */
-  merged: Record<string, MemorySnapshot>;
-  conflicts: Conflict[];
-}
-
-export type MergeResult =
-  | { status: "up-to-date" }
-  | { status: "merged"; commitId: string }
-  | { status: "conflicts"; conflicts: Conflict[] };
-
 export interface WorkspaceState {
-  schemaVersion: number;
-  currentBranchId: string;
+  schemaVersion: 2;
   memories: Record<string, MemoryIdentity>;
   revisions: Record<string, Revision>;
-  commits: Record<string, Commit>;
-  branches: Record<string, Branch>;
   relations: Record<string, Relation>;
   collections: Record<string, Collection>;
-  pendingMerge: PendingMerge | null;
 }
 
 /** Every mutation returns the next state plus a value. */

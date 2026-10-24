@@ -7,7 +7,17 @@ export function showValue(v: MemoryFieldValue | undefined): string {
   return String(v);
 }
 
-export function FieldDiff({ changes }: { changes: FieldChange[] }) {
+interface FieldDiffProps {
+  changes: FieldChange[];
+  /** When given, collectionId values are shown as the collection name instead of the raw id. */
+  collections?: Record<string, { name: string }>;
+}
+
+export function FieldDiff({ changes, collections }: FieldDiffProps) {
+  const show = (field: string, v: MemoryFieldValue | undefined) =>
+    field === "collectionId" && typeof v === "string" && collections && Object.hasOwn(collections, v)
+      ? collections[v].name
+      : showValue(v);
   if (changes.length === 0) return <p className="text-xs text-fg-muted">No differences.</p>;
   return (
     <div className="space-y-2">
@@ -40,11 +50,11 @@ export function FieldDiff({ changes }: { changes: FieldChange[] }) {
             <div className="space-y-0.5 p-2 text-xs">
               <div className="bg-rose-500/15 px-1 text-rose-300">
                 <span aria-hidden="true">- </span>
-                {showValue(c.before)}
+                {show(c.field, c.before)}
               </div>
               <div className="bg-emerald-500/15 px-1 text-emerald-300">
                 <span aria-hidden="true">+ </span>
-                {showValue(c.after)}
+                {show(c.field, c.after)}
               </div>
             </div>
           )}

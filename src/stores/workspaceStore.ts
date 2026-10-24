@@ -1,22 +1,34 @@
 import { create } from "zustand";
 import {
-  commitLog,
-  getBranch,
   listMemories,
+  listPendingRelations,
   pendingChanges,
-  type Branch,
-  type Commit,
+  timeline,
+  type Actor,
+  type ApproveAllResult,
+  type RejectAllResult,
   type Memory,
-  type MergeResult,
   type PendingChange,
+  type PendingRelation,
   type RelationProvenance,
+  type Revision,
   type WorkspaceState,
   type Mutation,
 } from "../domain";
-import { LocalRepository } from "../data/localRepository";
+import { createRepository } from "../data/createRepository";
+import { RemoteRepository } from "../data/remoteRepository";
 import type { LoadIssue, MemoryRepository } from "../data/repository";
 
 export const LOCAL_AUTHOR = "local-user";
+
+/**
+ * Optional selection for approveAll / rejectAll so the UI acts on exactly what the user saw. Omitted list =
+ * all of that kind; [] = none; unknown or no-longer-pending ids are ignored.
+ */
+export interface BulkOpts {
+  revisionIds?: string[];
+  relationIds?: string[];
+}
 
 export interface WorkspaceStore {
   state: WorkspaceState | null;
@@ -26,6 +38,12 @@ export interface WorkspaceStore {
   persistError: string | null;
   loadIssue: LoadIssue | null;
   author: string;
+  /** "remote" when backed by the Mnemonis server (live updates apply), otherwise "local" (this browser). */
+  mode: "local" | "remote";
+  /** Bumped by switchRepository so live-update hooks restart against the new repository. */
+  repoEpoch: number;
+  /** Server revision last seen (remote mode), otherwise null. */
+  remoteRev: number | null;
 
   init(): Promise<void>;
   reset(opts?: { seed?: boolean }): Promise<void>;
@@ -34,38 +52,75 @@ export interface WorkspaceStore {
   /** Replaces the workspace from exported JSON (validated by the repository). */
   importJson(json: string): Promise<boolean>;
   clearError(): void;
+  /**
+   * Swaps the repository (Settings connect/disconnect) and loads it. Stops live updates of the old one;
+   * the caller restarts them. Resolves false (error set, previous repository kept) when loading fails.
+   */
+  switchRepository(next: MemoryRepository): Promise<boolean>;
+  /**
+   * Live updates: polls the server every `intervalMs` (~3 s) while the tab is visible and replaces the state
+   * when its revision changed. Returns a stop function. No-op for a local repository.
+   */
+  startLiveUpdates(opts?: { intervalMs?: number }): () => void;
 
-  createMemory(input: Omit<Parameters<MemoryRepository["createMemory"]>[0], "author">): Promise<Memory | undefined>;
-  updateMemory(id: string, patch: Parameters<MemoryRepository["updateMemory"]>[0]["patch"]): Promise<Memory | undefined>;
-  archiveMemory(id: string): Promise<void>;
-  restoreMemory(id: string): Promise<void>;
-  rollbackMemory(memoryId: string, toRevisionId: string): Promise<void>;
-  /** provenance defaults to a user-created relation; agents pass origin 'process'. */
-  addRelation(fromId: string, toId: string, label: string, provenance?: RelationProvenance): Promise<void>;
-  removeRelation(id: string): Promise<void>;
+  /**
+   * Memory writes default to the signed-in user (saved immediately). Only non-UI callers (Memory Health,
+   * later MCP) pass an agent `actor`; their change then waits in the Inbox as a pending proposal.
+   */
+  createMemory(
+    input: Omit<Parameters<MemoryRepository["createMemory"]>[0], "actor">,
+    opts?: { actor?: Actor },
+  ): Promise<Memory | undefined>;
+  updateMemory(
+    id: string,
+    patch: Parameters<MemoryRepository["updateMemory"]>[0]["patch"],
+    opts?: { actor?: Actor },
+  ): Promise<Memory | undefined>;
+  archiveMemory(id: string, opts?: { actor?: Actor }): Promise<void>;
+  restoreMemory(id: string, opts?: { actor?: Actor }): Promise<void>;
+  rollbackMemory(memoryId: string, toRevisionId: string, opts?: { actor?: Actor }): Promise<void>;
+  /**
+   * provenance defaults to a user-created relation (or origin 'process' for an agent actor). A user's link
+   * is saved at once; an agent's link (opts.actor.kind === 'agent') waits in the Inbox.
+   */
+  addRelation(
+    fromId: string,
+    toId: string,
+    label: string,
+    provenance?: RelationProvenance,
+    opts?: { actor?: Actor },
+  ): Promise<void>;
+  /** User action by default; an agent actor is refused (the error lands in `error`). */
+  removeRelation(id: string, opts?: { actor?: Actor }): Promise<void>;
   createCollection(name: string, description?: string): Promise<void>;
   updateCollection(id: string, patch: { name?: string; description?: string }): Promise<void>;
   deleteCollection(id: string): Promise<void>;
-  commit(message: string): Promise<Commit | undefined>;
-  createBranch(name: string, fromCommitId?: string | null, switchTo?: boolean): Promise<Branch | undefined>;
-  switchBranch(branchId: string): Promise<void>;
-  merge(sourceBranchId: string, message?: string): Promise<MergeResult | undefined>;
-  resolveConflict(
-    conflictId: string,
-    choice: "ours" | "theirs" | "manual",
-    value?: Parameters<MemoryRepository["resolveConflict"]>[0]["value"],
-  ): Promise<void>;
-  completeMerge(): Promise<Commit | undefined>;
-  abortMerge(): Promise<void>;
+  /** Review decisions (always as the user). Resolve true on success. */
+  approve(revisionId: string): Promise<boolean>;
+  reject(revisionId: string): Promise<boolean>;
+  /** Approve / reject one pending link (user only). */
+  approveRelation(relationId: string): Promise<boolean>;
+  rejectRelation(relationId: string): Promise<boolean>;
+  /** Cover pending memory proposals AND pending links, atomically. */
+  approveAll(opts?: BulkOpts): Promise<boolean>;
+  rejectAll(opts?: BulkOpts): Promise<boolean>;
+  /** Like approveAll / rejectAll, but resolves with what was done and skipped (undefined on error). */
+  approveAllDetailed(opts?: BulkOpts): Promise<ApproveAllResult | undefined>;
+  rejectAllDetailed(opts?: BulkOpts): Promise<RejectAllResult | undefined>;
 }
 
 /** Thin store: no business rules here, everything delegates to the repository/domain. */
-export function createWorkspaceStore(repo: MemoryRepository) {
+export const POLL_INTERVAL_MS = 3000;
+
+export function createWorkspaceStore(initialRepo: MemoryRepository) {
+  let repo = initialRepo;
+  const modeOf = (r: MemoryRepository): "local" | "remote" => (r instanceof RemoteRepository ? "remote" : "local");
   return create<WorkspaceStore>((set, get) => {
     const sync = (state: WorkspaceState) => {
       const { persistError, loadIssue } = repo.getStatus();
-      set({ state, persistError, loadIssue, error: null });
+      set({ state, persistError, loadIssue, error: null, remoteRev: revNow() });
     };
+    const revNow = () => (repo instanceof RemoteRepository ? repo.getRev() : null);
     const fail = (e: unknown) => set({ error: e instanceof Error ? e.message : String(e) });
     /** Runs a repository mutation, syncs state, returns its value (undefined on error). */
     async function run<T>(fn: () => Promise<Mutation<T>>): Promise<T | undefined> {
@@ -79,6 +134,10 @@ export function createWorkspaceStore(repo: MemoryRepository) {
       }
     }
     const author = () => get().author;
+    const userActor = (): Actor => ({ kind: "user", name: author() });
+    const actorOf = (opts?: { actor?: Actor }): Actor => opts?.actor ?? userActor();
+    const pick = (o?: BulkOpts): BulkOpts => ({ revisionIds: o?.revisionIds, relationIds: o?.relationIds });
+    const succeeded = async <T>(fn: () => Promise<Mutation<T>>) => (await run(fn)) !== undefined;
 
     return {
       state: null,
@@ -87,6 +146,9 @@ export function createWorkspaceStore(repo: MemoryRepository) {
       persistError: null,
       loadIssue: null,
       author: LOCAL_AUTHOR,
+      mode: modeOf(initialRepo),
+      repoEpoch: 0,
+      remoteRev: null,
 
       async init() {
         set({ loading: true });
@@ -124,51 +186,112 @@ export function createWorkspaceStore(repo: MemoryRepository) {
       },
       clearError: () => set({ error: null }),
 
-      createMemory: (input) => run(() => repo.createMemory({ ...input, author: author() })),
-      updateMemory: (id, patch) => run(() => repo.updateMemory({ id, patch, author: author() })),
-      archiveMemory: async (id) => void (await run(() => repo.archiveMemory({ id, author: author() }))),
-      restoreMemory: async (id) => void (await run(() => repo.restoreMemory({ id, author: author() }))),
-      rollbackMemory: async (memoryId, toRevisionId) =>
-        void (await run(() => repo.rollbackMemory({ memoryId, toRevisionId, author: author() }))),
-      addRelation: async (fromId, toId, label, provenance) =>
-        void (await run(() =>
+      async switchRepository(next) {
+        const prev = repo;
+        repo = next;
+        try {
+          const state = await next.load();
+          set((st) => ({ mode: modeOf(next), repoEpoch: st.repoEpoch + 1 }));
+          sync(state);
+          return true;
+        } catch (e) {
+          repo = prev;
+          fail(e);
+          return false;
+        }
+      },
+
+      startLiveUpdates(opts) {
+        const target = repo;
+        if (!target.refresh) return () => undefined;
+        const interval = opts?.intervalMs ?? POLL_INTERVAL_MS;
+        let stopped = false;
+        let inFlight = false;
+        const tick = async () => {
+          if (stopped || inFlight || repo !== target || document.visibilityState === "hidden") return;
+          inFlight = true;
+          try {
+            // Queued behind any local mutation in the repository, so it can never clobber one.
+            const next = await target.refresh!();
+            if (!stopped && repo === target) {
+              const { persistError, loadIssue } = target.getStatus();
+              set(next ? { state: next, persistError, loadIssue, remoteRev: revNow() } : { persistError, loadIssue });
+            }
+          } catch {
+            if (!stopped && repo === target) {
+              const { persistError, loadIssue } = target.getStatus();
+              set({ persistError, loadIssue });
+            }
+          } finally {
+            inFlight = false;
+          }
+        };
+        const timer = setInterval(() => void tick(), interval);
+        const onVisible = () => {
+          if (document.visibilityState === "visible") void tick();
+        };
+        document.addEventListener("visibilitychange", onVisible);
+        return () => {
+          stopped = true;
+          clearInterval(timer);
+          document.removeEventListener("visibilitychange", onVisible);
+        };
+      },
+
+      createMemory: (input, opts) => run(() => repo.createMemory({ ...input, actor: actorOf(opts) })),
+      updateMemory: (id, patch, opts) => run(() => repo.updateMemory({ id, patch, actor: actorOf(opts) })),
+      archiveMemory: async (id, opts) => void (await run(() => repo.archiveMemory({ id, actor: actorOf(opts) }))),
+      restoreMemory: async (id, opts) => void (await run(() => repo.restoreMemory({ id, actor: actorOf(opts) }))),
+      rollbackMemory: async (memoryId, toRevisionId, opts) =>
+        void (await run(() => repo.rollbackMemory({ memoryId, toRevisionId, actor: actorOf(opts) }))),
+      addRelation: async (fromId, toId, label, provenance, opts) => {
+        const actor = actorOf(opts);
+        await run(() =>
           repo.addRelation({
             fromId,
             toId,
             label,
-            provenance: provenance ?? { origin: "user", createdBy: author() },
+            actor,
+            provenance:
+              provenance ??
+              (actor.kind === "agent"
+                ? { origin: "process", createdBy: actor.name, process: actor.name }
+                : { origin: "user", createdBy: author() }),
           }),
-        )),
-      removeRelation: async (id) => void (await run(() => repo.removeRelation({ id }))),
+        );
+      },
+      removeRelation: async (id, opts) =>
+        void (await run(() => repo.removeRelation({ id, actor: actorOf(opts) }))),
       createCollection: async (name, description) =>
         void (await run(() => repo.createCollection({ name, description }))),
       updateCollection: async (id, patch) => void (await run(() => repo.updateCollection({ id, ...patch }))),
       deleteCollection: async (id) => void (await run(() => repo.deleteCollection({ id }))),
-      commit: (message) => run(() => repo.commit({ message, author: author() })),
-      createBranch: (name, fromCommitId, switchTo) => run(() => repo.createBranch({ name, fromCommitId, switchTo })),
-      switchBranch: async (branchId) => void (await run(() => repo.switchBranch({ branchId }))),
-      merge: (sourceBranchId, message) => run(() => repo.merge({ sourceBranchId, author: author(), message })),
-      resolveConflict: async (conflictId, choice, value) =>
-        void (await run(() => repo.resolveConflict({ conflictId, choice, value }))),
-      completeMerge: () => run(() => repo.completeMerge()),
-      abortMerge: async () => void (await run(() => repo.abortMerge())),
+      approve: (revisionId) => succeeded(() => repo.approve({ revisionId, actor: userActor() })),
+      reject: (revisionId) => succeeded(() => repo.reject({ revisionId, actor: userActor() })),
+      approveRelation: (relationId) => succeeded(() => repo.approveRelation({ relationId, actor: userActor() })),
+      rejectRelation: (relationId) => succeeded(() => repo.rejectRelation({ relationId, actor: userActor() })),
+      approveAll: (opts) => succeeded(() => repo.approveAll({ ...pick(opts), actor: userActor() })),
+      rejectAll: (opts) => succeeded(() => repo.rejectAll({ ...pick(opts), actor: userActor() })),
+      approveAllDetailed: (opts) => run(() => repo.approveAllDetailed({ ...pick(opts), actor: userActor() })),
+      rejectAllDetailed: (opts) => run(() => repo.rejectAllDetailed({ ...pick(opts), actor: userActor() })),
     };
   });
 }
 
-export const useWorkspace = createWorkspaceStore(new LocalRepository());
+export const useWorkspace = createWorkspaceStore(createRepository());
 
 // ---- selectors (plain functions of the store state) -----------------------
 // NOTE: these derive new arrays/objects, so in components wrap them in useMemo
 // over `s.state` (or use zustand's useShallow) to avoid re-render loops.
 
-export const selectCurrentBranch = (s: WorkspaceStore): Branch | undefined =>
-  s.state ? getBranch(s.state, s.state.currentBranchId) : undefined;
+/** Changes waiting for review (the Inbox / short term memory), oldest first. */
+export const selectPending = (s: WorkspaceStore): PendingChange[] => (s.state ? pendingChanges(s.state) : []);
 
-/** Pending drafts (actual changes vs. head) on the current branch. */
-export const selectPendingDrafts = (s: WorkspaceStore): PendingChange[] =>
-  s.state ? pendingChanges(s.state) : [];
+/** Pending links proposed by agents, oldest first. */
+export const selectPendingRelations = (s: WorkspaceStore): PendingRelation[] =>
+  s.state ? listPendingRelations(s.state) : [];
 
 export const selectMemories = (s: WorkspaceStore): Memory[] => (s.state ? listMemories(s.state) : []);
 
-export const selectCommitLog = (s: WorkspaceStore): Commit[] => (s.state ? commitLog(s.state) : []);
+/** Saved revisions across all memories, newest first. */
+export const selectTimeline = (s: WorkspaceStore): Revision[] => (s.state ? timeline(s.state) : []);

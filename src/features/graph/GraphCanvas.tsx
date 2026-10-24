@@ -1,8 +1,8 @@
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { Button } from "lojee-ui";
-import { typeLabel } from "../../components/memoryMeta";
+import { STATUS_META, typeLabel } from "../../components/memoryMeta";
 import type { GraphEdge, GraphNode } from "./graphModel";
-import { ACCENT, AMBER, nodeRadius, ROSE, typeColor } from "./graphStyle";
+import { ACCENT, AMBER, nodeRadius, typeColor } from "./graphStyle";
 import {
   DEFAULT_LAYOUT,
   fitTransform,
@@ -367,7 +367,7 @@ export function GraphCanvas({
               const highlighted = !!highlightIds?.has(n.id);
               const dim = emphasisIds ? !emphasisIds.has(n.id) : false;
               const color = typeColor(n.type);
-              const label = `${n.title}, ${typeLabel(n.type)}, ${n.status}, ${n.degree} ${n.degree === 1 ? "relation" : "relations"}`;
+              const label = `${n.title}, ${typeLabel(n.type)}, ${STATUS_META[n.status].label}, ${n.degree} ${n.degree === 1 ? "relation" : "relations"}`;
               return (
                 <g
                   key={n.id}
@@ -396,8 +396,7 @@ export function GraphCanvas({
                     <circle r={r + 6} fill="none" stroke={ACCENT} strokeWidth={2} strokeDasharray={isLinkSource && !selected ? "4 3" : undefined} />
                   )}
                   {highlighted && <circle r={r + 5} fill="none" stroke={AMBER} strokeWidth={1.5} strokeDasharray="2 3" />}
-                  {n.status === "draft" && <circle r={r + 3} fill="none" stroke={AMBER} strokeWidth={2} />}
-                  {n.status === "conflict" && <circle r={r + 3} fill="none" stroke={ROSE} strokeWidth={2} />}
+                  {n.status === "pending" && <circle r={r + 3} fill="none" stroke={AMBER} strokeWidth={2} />}
                   <circle
                     r={r}
                     fill={color}

@@ -1,10 +1,10 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { ToastProvider } from "../../components/ToastProvider";
-import { LocalRepository } from "../../data/localRepository";
+import { BROWSER_COPIED_KEY, LocalRepository } from "../../data/localRepository";
 import { useWorkspace } from "../../stores/workspaceStore";
 import { createFakeAccounts, SESSION_TOKEN } from "../../test/fakeAccounts";
-import { resetWorkspace, seedLocalProfile } from "../../test/helpers";
+import { resetWorkspace } from "../../test/helpers";
 import { AuthContextProvider } from "../auth/AuthContext";
 import { clearSession, SESSION_STORAGE_KEY } from "../auth/session";
 import { SettingsPage } from "./SettingsPage";
@@ -21,6 +21,12 @@ function renderPage() {
       </ToastProvider>
     </MemoryRouter>,
   );
+}
+
+/** Leaves a workspace in this browser, as the old "use without an account" mode did. */
+async function seedBrowserData() {
+  const local = new LocalRepository();
+  await local.createMemory({ title: "From browser", actor: { kind: "user", name: "me" } });
 }
 
 /** Renders Settings for a signed-in server account (the session is restored via /api/auth/me). */
@@ -47,28 +53,7 @@ afterEach(async () => {
   sessionStorage.clear();
 });
 
-describe("Settings: Mnemonis account (local mode)", () => {
-  it("shows local wording, no pasted-token field, no server-only actions", () => {
-    seedLocalProfile();
-    renderPage();
-    expect(screen.getByText("Local mode")).toBeInTheDocument();
-    expect(screen.getByText("Local demo mode")).toBeInTheDocument();
-    expect(screen.queryByLabelText("Access token")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: /Copy my browser data/ })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Change password" })).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Delete account" })).not.toBeInTheDocument();
-    expect(fake.calls).toHaveLength(0);
-  });
-
-  it("'Sign in or register' leaves local mode", async () => {
-    seedLocalProfile();
-    renderPage();
-    fireEvent.click(screen.getByRole("button", { name: "Sign in or register" }));
-    await waitFor(() => expect(localStorage.getItem("mnemonis.auth.v1")).toContain('"signedIn":false'));
-  });
-});
-
-describe("Settings: Mnemonis account (server mode)", () => {
+describe("Settings: Mnemonis account", () => {
   it("shows Connected, the signed-in email and revision; no paste-token field", async () => {
     await renderSignedIn();
     expect(useWorkspace.getState().mode).toBe("remote");
@@ -76,6 +61,7 @@ describe("Settings: Mnemonis account (server mode)", () => {
     expect(screen.getByText("Signed in (server)")).toBeInTheDocument();
     expect(screen.queryByLabelText("Access token")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "Connect" })).not.toBeInTheDocument();
+    expect(screen.queryByText(/Local mode|Sign in or register/)).not.toBeInTheDocument();
     expect(document.body.textContent).not.toContain(SESSION_TOKEN);
   });
 
@@ -89,8 +75,7 @@ describe("Settings: Mnemonis account (server mode)", () => {
   });
 
   it("copies browser data to the account only after a confirm that says it REPLACES the account's data", async () => {
-    const local = new LocalRepository();
-    await local.createMemory({ title: "From browser", actor: { kind: "user", name: "me" } });
+    await seedBrowserData();
     await renderSignedIn();
     fireEvent.click(screen.getByRole("button", { name: "Copy my browser data to my account" }));
     expect(screen.getByText(/REPLACES everything stored in your account/)).toBeInTheDocument();
@@ -100,9 +85,25 @@ describe("Settings: Mnemonis account (server mode)", () => {
     const put = fake.calls.find((c) => c.method === "PUT")!;
     expect(put.headers["If-Match"]).toBe('"7"');
     expect(put.rawBody).toContain("From browser");
+    // Once only: the offer disappears.
+    await waitFor(() => expect(screen.queryByRole("button", { name: "Copy my browser data to my account" })).not.toBeInTheDocument());
+  });
+
+  it("offers the copy only when old browser data exists", async () => {
+    localStorage.clear(); // resetWorkspace() above leaves an empty browser workspace behind
+    await renderSignedIn();
+    expect(screen.queryByRole("button", { name: /Copy my browser data/ })).not.toBeInTheDocument();
+  });
+
+  it("does not offer the copy again once it was done", async () => {
+    await seedBrowserData();
+    localStorage.setItem(BROWSER_COPIED_KEY, "1");
+    await renderSignedIn();
+    expect(screen.queryByRole("button", { name: /Copy my browser data/ })).not.toBeInTheDocument();
   });
 
   it("cancelling the copy confirm sends nothing", async () => {
+    await seedBrowserData();
     await renderSignedIn();
     fireEvent.click(screen.getByRole("button", { name: "Copy my browser data to my account" }));
     fireEvent.click(screen.getByRole("button", { name: "Cancel" }));

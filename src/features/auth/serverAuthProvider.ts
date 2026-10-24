@@ -39,7 +39,7 @@ function toUser(d: UserDto): AuthUser {
   if (typeof d?.email !== "string") throw new ApiError(200, "bad_response", "The server sent an unexpected response.");
   const email = d.email;
   const displayName = typeof d.displayName === "string" && d.displayName.trim() ? d.displayName : email.split("@")[0];
-  return { id: typeof d.id === "string" ? d.id : undefined, email, displayName, guest: false };
+  return { id: typeof d.id === "string" ? d.id : undefined, email, displayName };
 }
 
 /**

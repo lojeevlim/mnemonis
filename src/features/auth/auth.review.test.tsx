@@ -1,8 +1,10 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
 import { MemoryRouter } from "react-router-dom";
 import { AppRoutes } from "../../app/router";
 import { ToastProvider } from "../../components/ToastProvider";
-import { seedLocalProfile } from "../../test/helpers";
+import { LocalRepository } from "../../data/localRepository";
+import { useWorkspace } from "../../stores/workspaceStore";
+import { seedSignedIn } from "../../test/helpers";
 import { AuthContextProvider } from "./AuthContext";
 import { clearSession } from "./session";
 
@@ -10,6 +12,11 @@ beforeEach(() => {
   localStorage.clear();
   sessionStorage.clear();
   clearSession();
+});
+afterEach(async () => {
+  vi.unstubAllGlobals();
+  clearSession();
+  await useWorkspace.getState().switchRepository(new LocalRepository());
 });
 
 function renderAt(state?: { from: string }) {
@@ -25,20 +32,14 @@ function renderAt(state?: { from: string }) {
 }
 
 describe("SignInPage return path", () => {
-  it("honours `from` after choosing local mode", async () => {
-    renderAt({ from: "/mcp" });
-    fireEvent.click(await screen.findByRole("button", { name: "Use without an account (this browser only)" }));
-    expect(await screen.findByText("Sign in to connect AI clients")).toBeInTheDocument();
-  });
-
   it("an already signed-in user is redirected to `from`", async () => {
-    seedLocalProfile();
+    seedSignedIn();
     renderAt({ from: "/mcp" });
-    expect(await screen.findByText("Sign in to connect AI clients")).toBeInTheDocument();
+    expect(await screen.findByRole("button", { name: "Create token" })).toBeInTheDocument();
   });
 
   it("ignores an off-site `from`", async () => {
-    seedLocalProfile();
+    seedSignedIn();
     renderAt({ from: "//evil.example" });
     expect((await screen.findAllByText("Overview")).length).toBeGreaterThan(0);
   });

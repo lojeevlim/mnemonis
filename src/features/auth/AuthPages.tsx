@@ -104,7 +104,7 @@ function CredentialsForm({ mode, registrationOpen, onDone }: { mode: "signIn" | 
 }
 
 export function SignInPage() {
-  const { status, mode, notice, clearNotice, continueLocal } = useAuth();
+  const { status, notice, clearNotice } = useAuth();
   const navigate = useNavigate();
   const to = useReturnTo();
   const [registrationOpen, setRegistrationOpen] = useState(true);
@@ -120,7 +120,7 @@ export function SignInPage() {
     };
   }, []);
 
-  if (status === "signedIn" && mode) return <Navigate to={to} replace />;
+  if (status === "signedIn") return <Navigate to={to} replace />;
   const go = () => navigate(to, { replace: true });
   const form = (m: "signIn" | "register") => <CredentialsForm mode={m} registrationOpen={registrationOpen} onDone={go} />;
 
@@ -142,18 +142,6 @@ export function SignInPage() {
       <p className="text-center text-xs text-fg-muted">
         Server: <code>{getServerUrl()}</code>
       </p>
-      <div className="space-y-2 border-t border-border pt-4 text-center">
-        <Button
-          variant="outline"
-          onClick={() => {
-            continueLocal();
-            go();
-          }}
-        >
-          Use without an account (this browser only)
-        </Button>
-        <p className="text-xs text-fg-muted">Your data stays in this browser. Nothing is sent to a server, and there is no sync or MCP.</p>
-      </div>
     </AuthFrame>
   );
 }

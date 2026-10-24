@@ -1,38 +1,27 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from "react";
 import { createRemoteRepository } from "../../data/createRepository";
-import { LocalRepository } from "../../data/localRepository";
 import { scrubLegacyServerToken } from "../../data/serverSettings";
 import { useWorkspace } from "../../stores/workspaceStore";
-import type { AuthProvider, AuthUser } from "./authProvider";
-import { LocalAuthProvider } from "./localAuthProvider";
+import type { AuthUser } from "./authProvider";
 import { serverAuthProvider, type ServerAuthProvider } from "./serverAuthProvider";
 import { clearSession, loadStoredSession, onUnauthorized } from "./session";
 
 export type AuthStatus = "loading" | "signedIn" | "signedOut";
-/** "server" = a real account; "local" = "Use without an account" (this browser only). */
-export type AuthMode = "server" | "local";
 
 export const SESSION_EXPIRED_NOTICE = "Your session expired. Sign in again.";
 
 export interface AuthContextValue {
   status: AuthStatus;
   user: AuthUser | null;
-  mode: AuthMode | null;
   /** One-shot message for the sign-in page (e.g. "session expired"). */
   notice: string | null;
   clearNotice(): void;
   signIn(input: { email: string; password: string; remember?: boolean }): Promise<void>;
   register(input: { email: string; password: string; displayName?: string; remember?: boolean }): Promise<void>;
-  /** "Use without an account (this browser only)". */
-  continueLocal(): void;
   signOut(): Promise<void>;
   changePassword(currentPassword: string, newPassword: string): Promise<void>;
   /** Deletes the server account (password re-checked by the server) and signs out. */
   deleteAccount(password: string): Promise<void>;
-  /** Local mode only. */
-  updateProfile(patch: { displayName?: string; email?: string }): AuthUser;
-  /** Local mode only: removes the local profile and signs out. */
-  deleteProfile(): void;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -42,42 +31,28 @@ function resetWorkspaceView() {
   useWorkspace.setState({ state: null, error: null, persistError: null, loadIssue: null, remoteRev: null });
 }
 
-/** Points the workspace at the server (as the current session) or at this browser, and loads it. */
-async function bindWorkspace(target: "server" | "local"): Promise<boolean> {
+/** Points the workspace at the server (as the current session) and loads it. */
+async function bindWorkspace(): Promise<boolean> {
   resetWorkspaceView();
-  const ok = await useWorkspace
-    .getState()
-    .switchRepository(target === "server" ? createRemoteRepository() : new LocalRepository());
+  const ok = await useWorkspace.getState().switchRepository(createRemoteRepository());
   if (!ok) useWorkspace.getState().clearError();
   return ok;
 }
 
 /**
  * Auth state. Starts "loading" only when a stored server session must be verified with GET /api/auth/me;
- * otherwise it is known immediately (a signed-in local profile, or signed out).
+ * otherwise it is known immediately (signed out).
  */
-export function AuthContextProvider({
-  server = serverAuthProvider,
-  local: localProp,
-  children,
-}: {
-  server?: ServerAuthProvider;
-  local?: AuthProvider;
-  children: ReactNode;
-}) {
-  const [local] = useState<AuthProvider>(() => localProp ?? new LocalAuthProvider());
-  const [state, setState] = useState<{ status: AuthStatus; user: AuthUser | null; mode: AuthMode | null }>(() => {
+export function AuthContextProvider({ server = serverAuthProvider, children }: { server?: ServerAuthProvider; children: ReactNode }) {
+  const [state, setState] = useState<{ status: AuthStatus; user: AuthUser | null }>(() => {
     scrubLegacyServerToken();
-    const lu = local.getUser();
-    if (lu) return { status: "signedIn", user: lu, mode: "local" };
-    return loadStoredSession() !== null ? { status: "loading", user: null, mode: null } : { status: "signedOut", user: null, mode: null };
+    return loadStoredSession() !== null ? { status: "loading", user: null } : { status: "signedOut", user: null };
   });
   const [notice, setNotice] = useState<string | null>(null);
 
-  /** `keepView`: leaving local mode keeps the browser workspace as is (only server data must not linger). */
-  const toSignedOut = useCallback((message: string | null, keepView = false) => {
-    if (!keepView) resetWorkspaceView();
-    setState({ status: "signedOut", user: null, mode: null });
+  const toSignedOut = useCallback((message: string | null) => {
+    resetWorkspaceView();
+    setState({ status: "signedOut", user: null });
     setNotice(message);
   }, []);
 
@@ -94,14 +69,14 @@ export function AuthContextProvider({
         if (cancelled) return;
         if (!user) {
           // A 401 already moved us to signedOut (with its notice); otherwise just leave "loading".
-          setState((st) => (st.status === "loading" ? { status: "signedOut", user: null, mode: null } : st));
+          setState((st) => (st.status === "loading" ? { status: "signedOut", user: null } : st));
           return;
         }
-        if (!(await bindWorkspace("server"))) {
+        if (!(await bindWorkspace())) {
           clearSession();
           return toSignedOut("Could not load your workspace from the server. Sign in again.");
         }
-        if (!cancelled) setState({ status: "signedIn", user, mode: "server" });
+        if (!cancelled) setState({ status: "signedIn", user });
       } catch (e) {
         // Server unreachable: keep the stored session so a reload can retry.
         if (!cancelled) toSignedOut(e instanceof Error ? e.message : "Cannot reach the server.");
@@ -115,15 +90,14 @@ export function AuthContextProvider({
 
   const enter = useCallback(
     async (user: AuthUser) => {
-      local.signOut(); // leave local mode: only one identity is active
-      if (!(await bindWorkspace("server"))) {
+      if (!(await bindWorkspace())) {
         await server.logout();
         throw new Error("Signed in, but your workspace could not be loaded from the server. Try again.");
       }
       setNotice(null);
-      setState({ status: "signedIn", user, mode: "server" });
+      setState({ status: "signedIn", user });
     },
-    [local, server],
+    [server],
   );
 
   const value = useMemo<AuthContextValue>(
@@ -133,35 +107,17 @@ export function AuthContextProvider({
       clearNotice: () => setNotice(null),
       signIn: async (i) => enter(await server.login(i)),
       register: async (i) => enter(await server.register(i)),
-      continueLocal: () => {
-        clearSession();
-        const user = local.continueAsGuest();
-        setNotice(null);
-        setState({ status: "signedIn", user, mode: "local" });
-        void bindWorkspace("local"); // never show a previous server identity's data
-      },
       signOut: async () => {
-        if (state.mode === "server") await server.logout();
-        else local.signOut();
-        toSignedOut(null, state.mode === "local");
+        await server.logout();
+        toSignedOut(null);
       },
       changePassword: (c, n) => server.changePassword(c, n),
       deleteAccount: async (password) => {
         await server.deleteAccount(password);
         toSignedOut("Your account was deleted.");
       },
-      updateProfile: (p) => {
-        const u = local.updateProfile(p);
-        setState((s) => (s.mode === "local" ? { ...s, user: u } : s));
-        return u;
-      },
-      deleteProfile: () => {
-        local.deleteProfile();
-        if (state.mode === "server") void server.logout();
-        toSignedOut(null, state.mode !== "server");
-      },
     }),
-    [state, notice, enter, server, local, toSignedOut],
+    [state, notice, enter, server, toSignedOut],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

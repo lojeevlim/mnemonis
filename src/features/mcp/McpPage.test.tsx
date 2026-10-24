@@ -4,7 +4,7 @@ import { ToastProvider } from "../../components/ToastProvider";
 import { LocalRepository } from "../../data/localRepository";
 import { useWorkspace } from "../../stores/workspaceStore";
 import { createFakeAccounts, MCP_TOKEN_SECRET, SESSION_TOKEN } from "../../test/fakeAccounts";
-import { resetWorkspace, seedLocalProfile } from "../../test/helpers";
+import { resetWorkspace } from "../../test/helpers";
 import { AuthContextProvider } from "../auth/AuthContext";
 import { clearSession, SESSION_STORAGE_KEY } from "../auth/session";
 import { safeMcpUrl } from "../auth/serverAuthProvider";
@@ -53,24 +53,12 @@ afterEach(async () => {
   sessionStorage.clear();
 });
 
-describe("MCP page without an account", () => {
-  it("explains that an account is needed, offers no token creation, and sends nothing", () => {
-    seedLocalProfile();
-    fake = createFakeAccounts();
-    vi.stubGlobal("fetch", fake.fetch);
-    renderPage();
-    expect(screen.getByText("Sign in to connect AI clients")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "Create token" })).not.toBeInTheDocument();
-    expect(fake.calls).toHaveLength(0);
+describe("MCP page copy", () => {
+  it("lists the tools, explains that only the user approves, and has no scope text or approve/reject tools", async () => {
+    await renderSignedIn();
     for (const t of [...READ_TOOLS, ...WRITE_TOOLS]) expect(screen.getByText(t.name)).toBeInTheDocument();
     expect(screen.getByText(/only you can do in this app/)).toBeInTheDocument();
-    expect(screen.getByText("Available after you sign in")).toBeInTheDocument();
-    expect(document.body.textContent).not.toContain("/mcp</code>");
-  });
-
-  it("has no scope text and no approve/reject tools", () => {
-    seedLocalProfile();
-    renderPage();
+    expect(screen.queryByText(/without an account/i)).not.toBeInTheDocument();
     expect(document.body.textContent).not.toMatch(/read-only tokens|read\/write|Scopes|Allow writes/i);
     expect([...READ_TOOLS, ...WRITE_TOOLS].filter((t) => /approve|reject/.test(t.name))).toEqual([]);
   });

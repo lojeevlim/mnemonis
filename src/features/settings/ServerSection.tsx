@@ -3,7 +3,7 @@ import { AlertDialog, Badge, Button, Card, Input } from "lojee-ui";
 import { InlineError } from "../../components/InlineError";
 import { useToast } from "../../components/ToastProvider";
 import { describeApiError } from "../../data/accountApi";
-import { LocalRepository } from "../../data/localRepository";
+import { BROWSER_COPIED_KEY, hasUncopiedBrowserData, LocalRepository } from "../../data/localRepository";
 import { getServerUrl } from "../../data/serverSettings";
 import { testServerConnection } from "../../data/testConnection";
 import { useWorkspace } from "../../stores/workspaceStore";
@@ -127,18 +127,18 @@ function DeleteAccount() {
   );
 }
 
-/** Settings card for the Mnemonis server account (or, in local mode, how to get one). */
+/** Settings card for the signed-in Mnemonis server account. */
 export function ServerSection() {
   const toast = useToast();
-  const { mode: authMode, user, signOut } = useAuth();
+  const { user, signOut } = useAuth();
   const rev = useWorkspace((s) => s.remoteRev);
-  const connected = authMode === "server";
   const serverUrl = getServerUrl();
 
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<{ ok: boolean; text: string } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [confirmCopy, setConfirmCopy] = useState(false);
+  const [hasBrowserData, setHasBrowserData] = useState(() => hasUncopiedBrowserData());
 
   const test = async () => {
     setBusy(true);
@@ -165,6 +165,12 @@ export function ServerSection() {
         clearError();
       } else {
         setError(null);
+        try {
+          localStorage.setItem(BROWSER_COPIED_KEY, "1");
+        } catch {
+          /* storage unavailable: the button just stays */
+        }
+        setHasBrowserData(false);
         toast("Browser data copied to your account", "success");
       }
     } catch (e) {
@@ -176,13 +182,11 @@ export function ServerSection() {
     <Card variant="outline" padding="sm" title="Mnemonis account">
       <div className="space-y-3">
         <div className="flex flex-wrap items-center gap-2">
-          <Badge variant="soft" size="sm" color={connected ? "emerald" : "slate"}>
-            {connected ? "Connected" : "Local mode"}
+          <Badge variant="soft" size="sm" color="emerald">
+            Connected
           </Badge>
           <span className="text-xs text-fg-muted" role="status">
-            {connected
-              ? `Signed in as ${user?.email ?? "your account"}${rev !== null ? ` (revision ${rev})` : ""}. Changes made by AI clients appear here automatically.`
-              : "No account: data stays in this browser."}
+            {`Signed in as ${user?.email ?? "your account"}${rev !== null ? ` (revision ${rev})` : ""}. Changes made by AI clients appear here automatically.`}
           </span>
         </div>
         <dl className="flex flex-wrap items-center justify-between gap-2 text-sm">
@@ -197,38 +201,27 @@ export function ServerSection() {
             {message.text}
           </p>
         )}
-        {connected ? (
-          <>
-            <div className="flex flex-wrap gap-2">
-              <Button size="sm" variant="outline" disabled={busy} onClick={() => void test()}>
-                Test connection
-              </Button>
-              <Button size="sm" variant="outline" disabled={busy} onClick={() => void signOut()}>
-                Log out
-              </Button>
-            </div>
-            <div className="space-y-2 border-t border-border pt-3">
-              <p className="text-xs text-fg-muted">
-                Optional: upload the workspace stored in this browser to your account. This replaces your account&apos;s data.
-              </p>
-              <Button size="sm" variant="destructive" disabled={busy} onClick={() => setConfirmCopy(true)}>
-                Copy my browser data to my account
-              </Button>
-            </div>
-            <ChangePassword />
-            <DeleteAccount />
-          </>
-        ) : (
-          <div className="space-y-2">
+        <div className="flex flex-wrap gap-2">
+          <Button size="sm" variant="outline" disabled={busy} onClick={() => void test()}>
+            Test connection
+          </Button>
+          <Button size="sm" variant="outline" disabled={busy} onClick={() => void signOut()}>
+            Log out
+          </Button>
+        </div>
+        {hasBrowserData && (
+          <div className="space-y-2 border-t border-border pt-3">
             <p className="text-xs text-fg-muted">
-              Sign in to, or register, a Mnemonis account so AI clients (MCP) can share this workspace. Your browser data can be copied
-              to the account afterwards.
+              Mnemonis found a workspace saved in this browser from before accounts. Copy it to your account once. This replaces your
+              account&apos;s data.
             </p>
-            <Button size="sm" onClick={() => void signOut()}>
-              Sign in or register
+            <Button size="sm" variant="destructive" disabled={busy} onClick={() => setConfirmCopy(true)}>
+              Copy my browser data to my account
             </Button>
           </div>
         )}
+        <ChangePassword />
+        <DeleteAccount />
       </div>
       <AlertDialog
         open={confirmCopy}

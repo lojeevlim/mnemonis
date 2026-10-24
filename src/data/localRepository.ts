@@ -63,6 +63,19 @@ function defaultStorage(): StorageLike | null {
   }
 }
 
+/** Set once the browser workspace was copied to an account, so Settings stops offering the copy. */
+export const BROWSER_COPIED_KEY = "mnemonis.browserCopied.v1";
+
+/** True when this browser still holds a workspace from the old "use without an account" mode and it was not copied yet. */
+export function hasUncopiedBrowserData(storage: StorageLike | null = defaultStorage()): boolean {
+  try {
+    if (!storage || storage.getItem(BROWSER_COPIED_KEY)) return false;
+    return storage.getItem(STORAGE_KEY) !== null || storage.getItem(LEGACY_STORAGE_KEY) !== null;
+  } catch {
+    return false;
+  }
+}
+
 export class LocalRepository implements MemoryRepository {
   private state: WorkspaceState | null = null;
   private readonly storage: StorageLike | null;

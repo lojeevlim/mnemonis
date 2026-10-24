@@ -1,6 +1,6 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { CORRUPT_BACKUP_KEY, STORAGE_KEY } from "../data/localRepository";
-import { AUTH_STORAGE_KEY } from "../features/auth/localAuthProvider";
+import { SESSION_STORAGE_KEY } from "../features/auth/session";
 import { ErrorBoundary } from "./ErrorBoundary";
 
 function Boom(): never {
@@ -44,16 +44,16 @@ describe("ErrorBoundary", () => {
     expect(screen.getByText(/no stored workspace data/i)).toBeInTheDocument();
   });
 
-  it("resets local workspace data (and corrupt backup) then reloads, keeping the profile", () => {
+  it("resets local workspace data (and corrupt backup) then reloads, keeping the login session", () => {
     localStorage.setItem(STORAGE_KEY, "x");
     localStorage.setItem(CORRUPT_BACKUP_KEY, "y");
-    localStorage.setItem(AUTH_STORAGE_KEY, "profile");
+    localStorage.setItem(SESSION_STORAGE_KEY, "profile");
     const reload = vi.fn();
     render(<ErrorBoundary reload={reload}><Boom /></ErrorBoundary>);
     fireEvent.click(screen.getByRole("button", { name: "Reset local data" }));
     expect(localStorage.getItem(STORAGE_KEY)).toBeNull();
     expect(localStorage.getItem(CORRUPT_BACKUP_KEY)).toBeNull();
-    expect(localStorage.getItem(AUTH_STORAGE_KEY)).toBe("profile");
+    expect(localStorage.getItem(SESSION_STORAGE_KEY)).toBe("profile");
     expect(reload).toHaveBeenCalledTimes(1);
   });
 });

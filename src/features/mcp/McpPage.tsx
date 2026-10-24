@@ -5,7 +5,6 @@ import { PageHeader } from "../../components/PageHeader";
 import { useToast } from "../../components/ToastProvider";
 import { ApiError, describeApiError } from "../../data/accountApi";
 import { formatDateTime } from "../../components/memoryMeta";
-import { useAuth } from "../auth/AuthContext";
 import { serverAuthProvider } from "../auth/serverAuthProvider";
 import { createToken, listTokens, revokeToken, tokenStatus, type CreatedToken, type McpToken } from "./tokensApi";
 
@@ -269,13 +268,11 @@ function TokensCard({ mcpUrl }: { mcpUrl: string | null }) {
 }
 
 export function McpPage() {
-  const { mode } = useAuth();
   // The MCP adapter is a separate server: its URL is whatever the API publishes in GET /api/auth/config (never derived from the API URL).
   const [mcpUrl, setMcpUrl] = useState<string | null>(null);
   const [configLoaded, setConfigLoaded] = useState(false);
 
   useEffect(() => {
-    if (mode !== "server") return;
     let cancelled = false;
     void serverAuthProvider.config().then((c) => {
       if (cancelled) return;
@@ -285,7 +282,7 @@ export function McpPage() {
     return () => {
       cancelled = true;
     };
-  }, [mode]);
+  }, []);
 
   return (
     <div className="mx-auto max-w-6xl space-y-4 p-4">
@@ -293,13 +290,6 @@ export function McpPage() {
         title="MCP Connections"
         description="Let AI clients such as Claude Code read and propose memories over the Model Context Protocol."
       />
-
-      {mode !== "server" && (
-        <Alert variant="info" title="Sign in to connect AI clients">
-          You are using Mnemonis without an account, so your data stays in this browser and no AI client can reach it. Sign in or
-          register (Settings) to create access tokens.
-        </Alert>
-      )}
 
       <p className="text-sm text-fg-muted">
         Note: tools never save on their own. Anything an AI client writes waits in your Inbox as short-term memory; approving or rejecting it is something only you can do in this app, so there are no approve or reject tools.
@@ -310,9 +300,7 @@ export function McpPage() {
           <div className="flex flex-wrap items-center justify-between gap-2">
             <dt className="text-fg-muted">MCP URL</dt>
             <dd>
-              {mode !== "server" ? (
-                <span className="text-fg-muted">Available after you sign in</span>
-              ) : mcpUrl ? (
+              {mcpUrl ? (
                 <code>{mcpUrl}</code>
               ) : (
                 <span className="text-fg-muted">{configLoaded ? "Not published by the server" : "Loading..."}</span>
@@ -320,7 +308,7 @@ export function McpPage() {
             </dd>
           </div>
         </dl>
-        {mode === "server" && configLoaded && !mcpUrl && (
+        {configLoaded && !mcpUrl && (
           <p className="mt-2 text-xs text-fg-muted">
             The Mnemonis server did not publish an MCP URL (or it is not https / localhost). Ask the operator to set{" "}
             <code>MNEMONIS_MCP_URL</code> on the API, then reload. Until then the command below shows <code>{MCP_URL_PLACEHOLDER}</code>: replace
@@ -329,7 +317,7 @@ export function McpPage() {
         )}
       </Card>
 
-      {mode === "server" && <TokensCard mcpUrl={mcpUrl} />}
+      <TokensCard mcpUrl={mcpUrl} />
 
       <section aria-label="MCP tools" className="grid gap-3 lg:grid-cols-2">
         <ToolList title="Read tools" tools={READ_TOOLS} badge="Read" />

@@ -75,7 +75,7 @@ function SideNav() {
 export function AppShell() {
   const navigate = useNavigate();
   const [menuOpen, setMenuOpen] = useState(false);
-  const { user, mode, signOut } = useAuth();
+  const { user, signOut } = useAuth();
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -100,8 +100,8 @@ export function AppShell() {
     if (id === "settings") navigate("/settings");
     else if (id === "logout") void signOut();
   };
-  const name = user?.displayName || "Local user";
-  const email = user ? user.email || (mode === "local" ? "This browser only" : "") : "";
+  const name = user?.displayName || user?.email || "Account";
+  const email = user?.email ?? "";
 
   return (
     <>

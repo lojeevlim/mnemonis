@@ -1,17 +1,28 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { App } from "./App";
-import { seedLocalProfile } from "../test/helpers";
+import { LocalRepository } from "../data/localRepository";
+import { useWorkspace } from "../stores/workspaceStore";
+import { seedSignedIn } from "../test/helpers";
+import { createSeedWorkspace } from "../data/seed";
+import { clearSession } from "../features/auth/session";
 import { NAV_ITEMS } from "./nav";
 
 beforeEach(() => {
   localStorage.clear();
-  seedLocalProfile();
+  sessionStorage.clear();
+  const fake = seedSignedIn();
+  fake.data.server.state = createSeedWorkspace(); // the account's workspace: the demo data carries 2 agent proposals plus 1 agent link
+});
+afterEach(async () => {
+  vi.unstubAllGlobals();
+  clearSession();
+  await useWorkspace.getState().switchRepository(new LocalRepository());
 });
 
 describe("AppShell", () => {
   it("renders the shell (Navbar brand) with all nav items", async () => {
     render(<App />);
-    expect(screen.getAllByText("Mnemonis").length).toBeGreaterThan(0);
+    expect((await screen.findAllByText("Mnemonis")).length).toBeGreaterThan(0);
     for (const item of NAV_ITEMS) {
       expect((await screen.findAllByText(item.label)).length).toBeGreaterThan(0);
     }
@@ -25,7 +36,7 @@ describe("AppShell", () => {
   });
 
   it("shows the number of changes waiting for review as a badge on Inbox", async () => {
-    render(<App />); // first load seeds the demo workspace, which carries 2 agent proposals plus 1 agent link
+    render(<App />);
     const badge = await screen.findByTestId("inbox-badge");
     expect(badge).toHaveTextContent("3 waiting for review");
     expect(within(badge.parentElement as HTMLElement).getByText("Inbox")).toBeInTheDocument();

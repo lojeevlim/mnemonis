@@ -1,9 +1,9 @@
-import { useId, useRef, useState, type ChangeEvent, type FormEvent } from "react";
-import { AlertDialog, Badge, Button, Card, Input, ThemeSwitcher } from "lojee-ui";
+import { useRef, useState, type ChangeEvent } from "react";
+import { AlertDialog, Badge, Button, Card, ThemeSwitcher } from "lojee-ui";
 import { PageHeader } from "../../components/PageHeader";
 import { useToast } from "../../components/ToastProvider";
 import { MAX_IMPORT_BYTES, migrateWorkspaceState } from "../../domain";
-import { CORRUPT_BACKUP_KEY, LEGACY_CORRUPT_BACKUP_KEY, LEGACY_STORAGE_KEY, STORAGE_KEY } from "../../data/localRepository";
+import { BROWSER_COPIED_KEY, CORRUPT_BACKUP_KEY, LEGACY_CORRUPT_BACKUP_KEY, LEGACY_STORAGE_KEY, STORAGE_KEY } from "../../data/localRepository";
 import { useWorkspace } from "../../stores/workspaceStore";
 import { InlineError } from "../../components/InlineError";
 import { LEGACY_RUN_LOG_KEY, RUN_LOG_KEY } from "../health/runLog";
@@ -57,32 +57,16 @@ export function previewImport(json: string, fileName: string): ImportPreview {
 }
 
 export function SettingsPage() {
-  const { user, mode, updateProfile, deleteProfile } = useAuth();
+  const { user, signOut } = useAuth();
   const toast = useToast();
   const loadIssue = useWorkspace((s) => s.loadIssue);
   const persistError = useWorkspace((s) => s.persistError);
-  const remote = useWorkspace((s) => s.mode === "remote");
   const memoryCount = useWorkspace((s) => (s.state ? Object.keys(s.state.memories).length : 0));
   const fileRef = useRef<HTMLInputElement>(null);
-  const uid = useId();
 
-  const [name, setName] = useState(user?.displayName ?? "");
-  const [email, setEmail] = useState(user?.email ?? "");
-  const [profileError, setProfileError] = useState<string | null>(null);
   const [dataError, setDataError] = useState<string | null>(null);
   const [preview, setPreview] = useState<ImportPreview | null>(null);
   const [confirm, setConfirm] = useState<Confirm>(null);
-
-  const saveProfile = (e: FormEvent) => {
-    e.preventDefault();
-    try {
-      updateProfile({ displayName: name, email });
-      setProfileError(null);
-      toast("Profile saved on this device", "success");
-    } catch (err) {
-      setProfileError(err instanceof Error ? err.message : String(err));
-    }
-  };
 
   const doExport = async () => {
     const json = await useWorkspace.getState().exportJson();
@@ -126,65 +110,41 @@ export function SettingsPage() {
   };
 
   const doClear = async () => {
-    // Connected: "clear local data" must never wipe the server, so only the browser copy is removed.
-    if (!remote) await useWorkspace.getState().reset({ seed: false });
+    // "Clear local data" never wipes the server: only what this browser stores is removed.
     try {
       for (const key of [
-        ...(remote ? [STORAGE_KEY] : []),
+        STORAGE_KEY,
         RUN_LOG_KEY,
         LEGACY_RUN_LOG_KEY,
         CORRUPT_BACKUP_KEY,
         LEGACY_STORAGE_KEY,
         LEGACY_CORRUPT_BACKUP_KEY,
+        BROWSER_COPIED_KEY,
       ]) {
         localStorage.removeItem(key);
       }
     } catch {
       /* storage unavailable */
     }
-    deleteProfile(); // signs out; ProtectedRoute sends you to /sign-in
+    await signOut(); // ProtectedRoute sends you to /sign-in
   };
 
   return (
     <div className="mx-auto max-w-3xl space-y-4 p-4">
-      <PageHeader title="Settings" description={remote ? "Your account, appearance and your data." : "Local profile, appearance and your data. Everything stays in this browser."} />
+      <PageHeader title="Settings" description="Your account, appearance and your data." />
 
-      {mode === "server" ? (
-        <Card variant="outline" padding="sm" title="Profile">
-          <dl className="space-y-1 text-sm">
-            <div className="flex justify-between gap-3">
-              <dt className="text-fg-muted">Name</dt>
-              <dd>{user?.displayName}</dd>
-            </div>
-            <div className="flex justify-between gap-3">
-              <dt className="text-fg-muted">Email</dt>
-              <dd>{user?.email}</dd>
-            </div>
-          </dl>
-        </Card>
-      ) : (
       <Card variant="outline" padding="sm" title="Profile">
-        <form onSubmit={saveProfile} className="space-y-3" noValidate>
-          <p className="text-xs text-fg-muted">Stored locally on this device only. It is not sent anywhere.</p>
-          <div className="flex flex-col gap-1">
-            <label htmlFor={`${uid}-name`} className="text-xs font-medium text-fg-muted">
-              Display name
-            </label>
-            <Input id={`${uid}-name`} size="sm" value={name} onChange={(e) => setName(e.target.value)} />
+        <dl className="space-y-1 text-sm">
+          <div className="flex justify-between gap-3">
+            <dt className="text-fg-muted">Name</dt>
+            <dd>{user?.displayName}</dd>
           </div>
-          <div className="flex flex-col gap-1">
-            <label htmlFor={`${uid}-email`} className="text-xs font-medium text-fg-muted">
-              Email
-            </label>
-            <Input id={`${uid}-email`} size="sm" type="email" value={email} onChange={(e) => setEmail(e.target.value)} />
+          <div className="flex justify-between gap-3">
+            <dt className="text-fg-muted">Email</dt>
+            <dd>{user?.email}</dd>
           </div>
-          <InlineError message={profileError} />
-          <Button type="submit" size="sm">
-            Save profile
-          </Button>
-        </form>
+        </dl>
       </Card>
-      )}
 
       <Card variant="outline" padding="sm" title="Appearance">
         <div className="space-y-2">
@@ -199,20 +159,14 @@ export function SettingsPage() {
         <div className="space-y-4">
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant="soft" size="sm" color={persistError ? "rose" : "emerald"}>
-              {remote
-                ? persistError
-                  ? "Server: problem"
-                  : "Server: OK"
-                : persistError
-                  ? "Browser storage: write failed"
-                  : "Browser storage: OK"}
+              {persistError ? "Server: problem" : "Server: OK"}
             </Badge>
             <Badge variant="soft" size="sm" color={loadIssue && loadIssue !== "missing" ? "amber" : "slate"}>
               {loadIssue && loadIssue !== "missing" ? `Load issue: ${loadIssue}` : "Last load: no issues"}
             </Badge>
             <span className="text-xs text-fg-muted">{memoryCount} memories</span>
           </div>
-          {persistError && <InlineError message={`${remote ? "Server error" : "Storage error"}: ${persistError}`} />}
+          {persistError && <InlineError message={`Server error: ${persistError}`} />}
 
           <div className="flex flex-wrap gap-2">
             <Button size="sm" icon="download" onClick={() => void doExport()}>
@@ -244,9 +198,8 @@ export function SettingsPage() {
               </Button>
             </div>
             <p className="text-xs text-fg-muted">
-              {remote
-                ? "This only clears what this browser stores (a workspace copy, your local profile and Memory Health run history). Your account and its data stay on the server; delete the account above if you want that gone too."
-                : "There is no server account in this mode, so “account deletion” means clearing the data stored in this browser: the workspace becomes empty, and your local profile and Memory Health run history are removed. Exported files are not affected."}
+              This only clears what this browser stores (a workspace copy and Memory Health run history) and signs you out. Your account
+              and its data stay on the server; delete the account above if you want that gone too.
             </p>
           </div>
         </div>
@@ -260,13 +213,11 @@ export function SettingsPage() {
           </div>
           <div className="flex justify-between gap-3">
             <dt className="text-fg-muted">Mode</dt>
-            <dd>{remote ? "Signed in (server)" : "Local demo mode"}</dd>
+            <dd>Signed in (server)</dd>
           </div>
         </dl>
         <p className="mt-2 text-xs text-fg-muted">
-          {remote
-            ? "Mnemonis is signed in to your account: memories are stored on the server. Appearance settings stay in this browser."
-            : "Mnemonis is running in local mode: your memories, profile and settings are stored only in this browser. Nothing is synced to a server or shared with any model."}
+          Mnemonis is signed in to your account: memories are stored on the server. Appearance settings stay in this browser.
         </p>
       </Card>
 
@@ -291,7 +242,7 @@ export function SettingsPage() {
         onClose={() => setConfirm(null)}
         variant="destructive"
         title="Reset to demo data?"
-        description={`This replaces your current workspace${remote ? " ON THE SERVER" : ""}, including saved changes and anything waiting in your Inbox, with the demo data. Export first if you want to keep it.`}
+        description={`This replaces your current workspace ON THE SERVER, including saved changes and anything waiting in your Inbox, with the demo data. Export first if you want to keep it.`}
         confirmLabel="Reset to demo data"
         onConfirm={() => void doReset()}
       />
@@ -300,7 +251,7 @@ export function SettingsPage() {
         onClose={() => setConfirm(null)}
         variant="destructive"
         title="Clear all local data?"
-        description={remote ? "This removes the workspace copy, your local profile and Memory Health run history stored in this browser. Your account's data on the server is not touched. You will be signed out. This cannot be undone." : "This empties the workspace and removes your local profile and Memory Health run history from this browser, including data kept from older versions of Mnemonis. You will be signed out. This cannot be undone."}
+        description="This removes the workspace copy and Memory Health run history stored in this browser, including data kept from older versions of Mnemonis. Your account's data on the server is not touched. You will be signed out. This cannot be undone."
         confirmLabel="Clear all local data"
         onConfirm={() => void doClear()}
       />

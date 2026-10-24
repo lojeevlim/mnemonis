@@ -2,35 +2,37 @@ import { AUTH_STORAGE_KEY, LocalAuthProvider } from "./localAuthProvider";
 
 beforeEach(() => localStorage.clear());
 
-describe("LocalAuthProvider", () => {
-  it("starts signed out, signs up, persists across instances and never stores a password", () => {
+describe("LocalAuthProvider (explicit 'use without an account' mode only)", () => {
+  it("has no email-only sign-in or sign-up any more", () => {
+    const p = new LocalAuthProvider() as unknown as Record<string, unknown>;
+    expect(p.signIn).toBeUndefined();
+    expect(p.signUp).toBeUndefined();
+  });
+
+  it("starts signed out, continues as a guest, persists across instances and never stores a password", () => {
     const a = new LocalAuthProvider();
     expect(a.getUser()).toBeNull();
     expect(a.hasProfile()).toBe(false);
-    a.signUp({ displayName: " Ada ", email: "ada@example.com" });
+    a.continueAsGuest();
     const b = new LocalAuthProvider();
-    expect(b.getUser()).toMatchObject({ displayName: "Ada", email: "ada@example.com", guest: false });
+    expect(b.getUser()).toMatchObject({ displayName: "Local user", guest: true });
     const raw = localStorage.getItem(AUTH_STORAGE_KEY)!;
     expect(JSON.parse(raw).version).toBe(1);
-    expect(raw).not.toMatch(/password/i);
+    expect(raw).not.toMatch(/password|token/i);
   });
 
-  it("requires a display name", () => {
-    expect(() => new LocalAuthProvider().signUp({ displayName: " ", email: "" })).toThrow(/required/);
-  });
-
-  it("signs out (keeping the profile), signs back in by email, rejects unknown emails", () => {
+  it("signs out keeping the profile, and continuing reuses it", () => {
     const p = new LocalAuthProvider();
-    p.signUp({ displayName: "Ada", email: "ada@example.com" });
+    p.continueAsGuest();
+    p.updateProfile({ displayName: "Ada" });
     p.signOut();
     expect(p.getUser()).toBeNull();
     expect(p.hasProfile()).toBe(true);
-    expect(() => p.signIn({ email: "other@example.com" })).toThrow(/No local profile/);
-    expect(p.signIn({ email: "ADA@example.com" }).displayName).toBe("Ada");
+    expect(p.continueAsGuest().displayName).toBe("Ada");
     expect(p.getUser()).not.toBeNull();
   });
 
-  it("continues as a guest, updates and deletes the profile", () => {
+  it("updates and deletes the profile", () => {
     const p = new LocalAuthProvider();
     expect(p.continueAsGuest()).toMatchObject({ guest: true, displayName: "Local user" });
     expect(p.updateProfile({ displayName: "Zed", email: "z@example.com" })).toMatchObject({ displayName: "Zed", guest: false });

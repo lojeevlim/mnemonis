@@ -57,7 +57,7 @@ export function previewImport(json: string, fileName: string): ImportPreview {
 }
 
 export function SettingsPage() {
-  const { user, updateProfile, deleteProfile } = useAuth();
+  const { user, mode, updateProfile, deleteProfile } = useAuth();
   const toast = useToast();
   const loadIssue = useWorkspace((s) => s.loadIssue);
   const persistError = useWorkspace((s) => s.persistError);
@@ -147,8 +147,22 @@ export function SettingsPage() {
 
   return (
     <div className="mx-auto max-w-3xl space-y-4 p-4">
-      <PageHeader title="Settings" description={remote ? "Local profile, appearance, server connection and your data." : "Local profile, appearance and your data. Everything stays in this browser."} />
+      <PageHeader title="Settings" description={remote ? "Your account, appearance and your data." : "Local profile, appearance and your data. Everything stays in this browser."} />
 
+      {mode === "server" ? (
+        <Card variant="outline" padding="sm" title="Profile">
+          <dl className="space-y-1 text-sm">
+            <div className="flex justify-between gap-3">
+              <dt className="text-fg-muted">Name</dt>
+              <dd>{user?.displayName}</dd>
+            </div>
+            <div className="flex justify-between gap-3">
+              <dt className="text-fg-muted">Email</dt>
+              <dd>{user?.email}</dd>
+            </div>
+          </dl>
+        </Card>
+      ) : (
       <Card variant="outline" padding="sm" title="Profile">
         <form onSubmit={saveProfile} className="space-y-3" noValidate>
           <p className="text-xs text-fg-muted">Stored locally on this device only. It is not sent anywhere.</p>
@@ -170,6 +184,7 @@ export function SettingsPage() {
           </Button>
         </form>
       </Card>
+      )}
 
       <Card variant="outline" padding="sm" title="Appearance">
         <div className="space-y-2">
@@ -229,8 +244,9 @@ export function SettingsPage() {
               </Button>
             </div>
             <p className="text-xs text-fg-muted">
-              There is no server account in this mode, so “account deletion” means clearing the data stored in this browser: the
-              workspace becomes empty, and your local profile and Memory Health run history are removed. Exported files are not affected.
+              {remote
+                ? "This only clears what this browser stores (a workspace copy, your local profile and Memory Health run history). Your account and its data stay on the server; delete the account above if you want that gone too."
+                : "There is no server account in this mode, so “account deletion” means clearing the data stored in this browser: the workspace becomes empty, and your local profile and Memory Health run history are removed. Exported files are not affected."}
             </p>
           </div>
         </div>
@@ -244,12 +260,12 @@ export function SettingsPage() {
           </div>
           <div className="flex justify-between gap-3">
             <dt className="text-fg-muted">Mode</dt>
-            <dd>{remote ? "Connected to server" : "Local demo mode"}</dd>
+            <dd>{remote ? "Signed in (server)" : "Local demo mode"}</dd>
           </div>
         </dl>
         <p className="mt-2 text-xs text-fg-muted">
           {remote
-            ? "Mnemonis is connected to your server: memories are stored there. Your profile and settings stay in this browser."
+            ? "Mnemonis is signed in to your account: memories are stored on the server. Appearance settings stay in this browser."
             : "Mnemonis is running in local mode: your memories, profile and settings are stored only in this browser. Nothing is synced to a server or shared with any model."}
         </p>
       </Card>
@@ -284,7 +300,7 @@ export function SettingsPage() {
         onClose={() => setConfirm(null)}
         variant="destructive"
         title="Clear all local data?"
-        description={remote ? "This removes the workspace copy, your local profile and Memory Health run history stored in this browser. The server's data is not touched. You will be signed out. This cannot be undone." : "This empties the workspace and removes your local profile and Memory Health run history from this browser, including data kept from older versions of Mnemonis. You will be signed out. This cannot be undone."}
+        description={remote ? "This removes the workspace copy, your local profile and Memory Health run history stored in this browser. Your account's data on the server is not touched. You will be signed out. This cannot be undone." : "This empties the workspace and removes your local profile and Memory Health run history from this browser, including data kept from older versions of Mnemonis. You will be signed out. This cannot be undone."}
         confirmLabel="Clear all local data"
         onConfirm={() => void doClear()}
       />

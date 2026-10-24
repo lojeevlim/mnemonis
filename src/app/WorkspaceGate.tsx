@@ -2,8 +2,7 @@ import { useEffect, useState, type ReactNode } from "react";
 import { Alert, Button, ErrorState, LoadingState, Skeleton } from "lojee-ui";
 import type { LoadIssue } from "../data/repository";
 import { useWorkspace } from "../stores/workspaceStore";
-import { LocalRepository } from "../data/localRepository";
-import { clearServerSettings } from "../data/serverSettings";
+import { useOptionalAuth } from "../features/auth/AuthContext";
 
 const LOAD_ISSUE_COPY: Partial<Record<LoadIssue, { title: string; body: string }>> = {
   corrupt: {
@@ -35,11 +34,16 @@ export function WorkspaceGate({ children }: { children: ReactNode }) {
   const init = useWorkspace((s) => s.init);
   const clearError = useWorkspace((s) => s.clearError);
   const [dismissed, setDismissed] = useState<string[]>([]);
+  // Outside an auth provider (tests) nothing to wait for. While a stored session is verified, never load anything.
+  const auth = useOptionalAuth();
+  const authLoading = auth?.status === "loading";
+  const signOut = auth?.signOut;
 
   useEffect(() => {
+    if (authLoading) return;
     const s = useWorkspace.getState();
     if (!s.state && !s.loading) void init();
-  }, [init]);
+  }, [init, authLoading]);
 
   // Live updates (server mode only): agent proposals appear without a reload. Stops on unmount.
   useEffect(() => {
@@ -47,8 +51,8 @@ export function WorkspaceGate({ children }: { children: ReactNode }) {
     return useWorkspace.getState().startLiveUpdates();
   }, [hasState, mode, repoEpoch]);
 
-  if (!state) {
-    if (error) {
+  if (!state || authLoading) {
+    if (error && !authLoading) {
       return (
         <div className="p-6">
           <ErrorState
@@ -58,16 +62,9 @@ export function WorkspaceGate({ children }: { children: ReactNode }) {
                 <Button size="sm" onClick={() => void init()}>
                   Try again
                 </Button>
-                {mode === "remote" && (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    onClick={() => {
-                      clearServerSettings();
-                      void useWorkspace.getState().switchRepository(new LocalRepository());
-                    }}
-                  >
-                    Switch to local mode
+                {mode === "remote" && signOut && (
+                  <Button size="sm" variant="outline" onClick={() => void signOut()}>
+                    Sign out
                   </Button>
                 )}
               </div>
@@ -113,7 +110,7 @@ export function WorkspaceGate({ children }: { children: ReactNode }) {
           >
             {persistError}{" "}
             {mode === "remote"
-              ? "Live updates continue to retry; check the server and your token in Settings."
+              ? "Live updates continue to retry; check that the server is running, or sign out and sign in again."
               : "Your latest changes exist only in memory until storage works again."}
           </Alert>
         )}

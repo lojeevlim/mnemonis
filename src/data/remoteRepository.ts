@@ -11,7 +11,12 @@ import type { LoadIssue, MemoryRepository, RepositoryStatus } from "./repository
 
 export interface RemoteRepositoryOptions {
   baseUrl: string;
-  token: string;
+  /** A fixed token (tests). In the app pass `getToken` so the session is read at request time. */
+  token?: string;
+  /** Returns the current session token (null when signed out). Takes precedence over `token`. */
+  getToken?: () => string | null;
+  /** Called once per 401 so the app can clear the session and send the user to /sign-in. */
+  onUnauthorized?: () => void;
   /** Injectable for tests; defaults to the global fetch. */
   fetch?: typeof fetch;
 }
@@ -28,7 +33,7 @@ export class RemoteError extends Error {
   }
 }
 
-const UNAUTHORIZED_MSG = "The server rejected the access token (401). Check the token in Settings.";
+const UNAUTHORIZED_MSG = "Your session is no longer valid (401). Sign in again.";
 
 /** Ops where the server always acts as the human user; an agent actor is refused client-side like the local domain does. */
 const USER_ONLY = new Set([
@@ -54,7 +59,8 @@ const etag = (rev: number) => `"${rev}"`;
  */
 export class RemoteRepository implements MemoryRepository {
   private readonly base: string;
-  private readonly token: string;
+  private readonly getToken: () => string | null;
+  private readonly onUnauthorized: (() => void) | undefined;
   private readonly fetchFn: typeof fetch;
   private state: WorkspaceState | null = null;
   private rev: number | null = null;
@@ -62,7 +68,8 @@ export class RemoteRepository implements MemoryRepository {
 
   constructor(opts: RemoteRepositoryOptions) {
     this.base = opts.baseUrl.replace(/\/+$/, "");
-    this.token = opts.token;
+    this.getToken = opts.getToken ?? (() => opts.token ?? null);
+    this.onUnauthorized = opts.onUnauthorized;
     this.fetchFn = opts.fetch ?? ((...a) => globalThis.fetch(...a));
   }
 
@@ -222,11 +229,13 @@ export class RemoteRepository implements MemoryRepository {
 
   /** One authenticated request. Resolves for 2xx and 304; every other outcome throws. */
   private async send(method: string, path: string, init: { headers?: Record<string, string>; body?: string } = {}): Promise<Response> {
+    const token = this.getToken();
+    if (!token) throw this.noteFailure(new RemoteError("unauthorized", UNAUTHORIZED_MSG, 401));
     let r: Response;
     try {
       r = await this.fetchFn(this.base + path, {
         method,
-        headers: { Accept: "application/json", ...init.headers, Authorization: `Bearer ${this.token}` },
+        headers: { Accept: "application/json", ...init.headers, Authorization: `Bearer ${token}` },
         body: init.body,
         cache: "no-store",
       });
@@ -237,7 +246,10 @@ export class RemoteRepository implements MemoryRepository {
       this.status.persistError = null;
       return r;
     }
-    if (r.status === 401) throw this.noteFailure(new RemoteError("unauthorized", UNAUTHORIZED_MSG, 401));
+    if (r.status === 401) {
+      this.onUnauthorized?.();
+      throw this.noteFailure(new RemoteError("unauthorized", UNAUTHORIZED_MSG, 401));
+    }
     let code = "";
     let message = "";
     try {

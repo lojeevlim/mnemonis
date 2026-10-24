@@ -1,29 +1,28 @@
 /**
- * Auth abstraction. Only LocalAuthProvider exists: a single local profile kept in
- * this browser's localStorage. There is no server, no password and no session
- * token. A Supabase-backed provider can implement the same interface later.
+ * Auth types. Two providers exist:
+ * - serverAuthProvider: real accounts on the Mnemonis server (email + password, bearer session).
+ * - LocalAuthProvider: only for the explicit "Use without an account (this browser only)" mode.
  */
 export interface AuthUser {
+  /** Server user id (server accounts only). */
+  id?: string;
   displayName: string;
   email: string;
-  createdAt: string;
-  /** True when created through "Continue in local demo mode". */
+  createdAt?: string;
+  /** True for the anonymous "Use without an account" profile. */
   guest: boolean;
 }
 
+/** Local, this-browser-only profile. No password, no server. */
 export interface AuthProvider {
-  /** The signed-in user, or null. Synchronous: local mode reads storage directly. */
+  /** The profile when signed in to local mode, or null. */
   getUser(): AuthUser | null;
   /** True when a profile exists on this device (even if signed out). */
   hasProfile(): boolean;
-  /** Creates (or replaces) the local profile and signs in. */
-  signUp(input: { displayName: string; email: string }): AuthUser;
-  /** Signs in to the existing local profile; throws if none matches. No password is read or stored. */
-  signIn(input: { email: string }): AuthUser;
-  /** Creates a default guest profile and signs in. */
+  /** Creates (or reuses) the anonymous local profile and signs in. */
   continueAsGuest(): AuthUser;
   signOut(): void;
   updateProfile(patch: { displayName?: string; email?: string }): AuthUser;
-  /** Removes the local profile entirely (local "account deletion"). */
+  /** Removes the local profile entirely. */
   deleteProfile(): void;
 }

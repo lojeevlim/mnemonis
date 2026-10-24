@@ -75,7 +75,7 @@ function SideNav() {
 export function AppShell() {
   const navigate = useNavigate();
   const [menuOpen, setMenuOpen] = useState(false);
-  const { signOut } = useAuth();
+  const { user, mode, signOut } = useAuth();
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -96,24 +96,12 @@ export function AppShell() {
     onSelect: () => navigate(item.path),
   }));
 
-  const userActions  = (id?: string) =>{
-    switch(id){
-      case 'profile':
-        navigate('/profile');
-        break;
-      case 'settings':
-        navigate('/settings');
-        break;
-      case 'billing':
-        navigate('/billing');
-        break;
-      case 'logout':
-        signOut();
-        break;
-      default:
-        break;
-    }
-  }
+  const userActions = (id?: string) => {
+    if (id === "settings") navigate("/settings");
+    else if (id === "logout") void signOut();
+  };
+  const name = user?.displayName || "Local user";
+  const email = user ? user.email || (mode === "local" ? "This browser only" : "") : "";
 
   return (
     <>
@@ -171,16 +159,14 @@ export function AppShell() {
           className="w-fulll"
           actions={
             <UserMenu
-              name="Jordan Diaz"
-              email="jordan@lojee.io"
-              avatarInitials="JD"
+              name={name}
+              email={email}
+              avatarInitials={name.slice(0, 2).toUpperCase()}
               transition="fade"
               onItemSelect={(item:UserMenuItemExtend) => { userActions(item.id) }}
               items={[
-                { id:'profile', label: "Profile", icon: "user" },
-                { id:'settings', label: "Settings", icon: "settings" },
-                { id:'billing', label: "Billing", icon: "tag" },
-                { id:'logout', label: "Log out", icon: "arrow-right", danger: true },
+                { id: "settings", label: "Settings", icon: "settings" },
+                { id: "logout", label: "Sign out", icon: "arrow-right", danger: true },
               ] as UserMenuItemExtend[]}
             />
           }

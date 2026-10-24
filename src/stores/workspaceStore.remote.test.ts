@@ -104,7 +104,7 @@ describe("workspace store with a remote repository", () => {
     const bad = createFakeServer({ token: "other" });
     const ok = await store.getState().switchRepository(new RemoteRepository({ baseUrl: "http://x", token: "nope", fetch: bad.fetch }));
     expect(ok).toBe(false);
-    expect(store.getState().error).toMatch(/rejected the access token/);
+    expect(store.getState().error).toMatch(/session is no longer valid/);
     expect(store.getState().mode).toBe("remote");
     expect(store.getState().repoEpoch).toBe(0);
   });

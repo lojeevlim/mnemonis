@@ -55,30 +55,6 @@ export class LocalAuthProvider implements AuthProvider {
     return this.read() !== null;
   }
 
-  signUp({ displayName, email }: { displayName: string; email: string }): AuthUser {
-    const name = displayName.trim();
-    if (!name) throw new Error("Display name is required.");
-    // Never silently replace a real profile (only the anonymous guest placeholder can be upgraded).
-    const existing = this.read();
-    if (existing && !existing.profile.guest) {
-      throw new Error(
-        "A local profile already exists on this device. Sign in to it, or clear all local data in Settings to start over.",
-      );
-    }
-    const profile: AuthUser = { displayName: name, email: email.trim(), createdAt: new Date().toISOString(), guest: false };
-    this.write({ version: 1, profile, signedIn: true });
-    return profile;
-  }
-
-  signIn({ email }: { email: string }): AuthUser {
-    const s = this.read();
-    if (!s || s.profile.guest || s.profile.email.toLowerCase() !== email.trim().toLowerCase()) {
-      throw new Error("No local profile with that email exists on this device. Create one, or continue in local demo mode.");
-    }
-    this.write({ ...s, signedIn: true });
-    return s.profile;
-  }
-
   continueAsGuest(): AuthUser {
     const existing = this.read();
     if (existing) {

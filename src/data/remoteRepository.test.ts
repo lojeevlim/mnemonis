@@ -115,7 +115,7 @@ describe("RemoteRepository mutations", () => {
     const e = await repo.archiveMemory({ id: "m", actor: user }).catch((x: unknown) => x);
     expect(e).toBeInstanceOf(RemoteError);
     expect(e).toMatchObject({ kind: "unauthorized", status: 401 });
-    expect(repo.getStatus().persistError).toMatch(/rejected the access token/);
+    expect(repo.getStatus().persistError).toMatch(/session is no longer valid/);
     expect(repo.getStatus().persistError).not.toContain("wrong");
 
     const b = setup();
@@ -209,5 +209,27 @@ describe("RemoteRepository import / reset", () => {
     await repo.reset();
     sent = fake.calls.at(-1)!.body as typeof sent;
     expect(Object.keys(sent.state.memories).length).toBeGreaterThan(0);
+  });
+});
+
+describe("RemoteRepository session token", () => {
+  it("reads the token at request time and calls onUnauthorized once per 401", async () => {
+    const fake = createFakeServer({ token: "ms_live" });
+    let token: string | null = "ms_live";
+    const onUnauthorized = vi.fn();
+    const repo = new RemoteRepository({ baseUrl: BASE, getToken: () => token, onUnauthorized, fetch: fake.fetch });
+    await repo.load();
+    expect(fake.calls[0].headers.Authorization).toBe("Bearer ms_live");
+    expect(onUnauthorized).not.toHaveBeenCalled();
+    token = "ms_revoked";
+    await expect(repo.refresh()).rejects.toMatchObject({ kind: "unauthorized", status: 401 });
+    expect(onUnauthorized).toHaveBeenCalledTimes(1);
+  });
+
+  it("sends nothing once the session is gone", async () => {
+    const fake = createFakeServer({ token: "ms_live" });
+    const repo = new RemoteRepository({ baseUrl: BASE, getToken: () => null, fetch: fake.fetch });
+    await expect(repo.load()).rejects.toMatchObject({ kind: "unauthorized" });
+    expect(fake.calls).toHaveLength(0);
   });
 });

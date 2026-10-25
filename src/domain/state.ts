@@ -1,3 +1,4 @@
+import { LIMITS } from "./limits";
 import { ORIGINS, PROJECT_SOURCE_KINDS, RELATION_STATUSES, REVISION_STATUSES, type Relation, type WorkspaceState } from "./types";
 import { isJsonValue, isPlainObject, isReservedKey } from "./util";
 
@@ -134,11 +135,26 @@ function validate(raw: Rec): Record<string, Relation> | null {
   for (const [, pr] of projects) {
     if (!isStr(pr.key) || !isStr(pr.name) || !isStr(pr.createdAt) || !isStr(pr.createdBy)) return null;
     if (!isStrArray(pr.aliases) || !isStrOrNull(pr.collectionId)) return null;
+    if (pr.aliases.length > LIMITS.maxProjectAliases) return null;
     if (typeof pr.autoCreated !== "boolean" || typeof pr.confirmed !== "boolean") return null;
-    if (!Array.isArray(pr.sources)) return null;
+    if (!Array.isArray(pr.sources) || pr.sources.length > LIMITS.maxProjectSources) return null;
     for (const s of pr.sources) {
       if (!isPlainObject(s) || !isStr(s.ref) || !isStr(s.kind) || !(PROJECT_SOURCE_KINDS as readonly string[]).includes(s.kind)) return null;
     }
+  }
+  // A project and its folder, when both exist and both name a link, must name each other (a dangling id is
+  // tolerated: the other side may have been deleted).
+  const colMap = raw.collections as Rec;
+  const projMap = raw.projects as Rec;
+  for (const [id, pr] of projects) {
+    if (pr.collectionId === null || !has(colMap, pr.collectionId)) continue;
+    const c = colMap[pr.collectionId as string] as Rec;
+    if (c.projectId !== undefined && c.projectId !== null && c.projectId !== id) return null;
+  }
+  for (const [id, c] of collections) {
+    if (!isStr(c.projectId) || !has(projMap, c.projectId)) continue;
+    const pr = projMap[c.projectId] as Rec;
+    if (pr.collectionId !== null && pr.collectionId !== id) return null;
   }
   for (const [, r] of relations) {
     const p = r.provenance;

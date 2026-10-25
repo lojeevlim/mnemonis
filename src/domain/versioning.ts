@@ -9,7 +9,7 @@ import {
 } from "./relations";
 import { autoRelate, rejectStalePendingLinks } from "./titlePrefix";
 import { rejectStaleTopicLinks, topicRelator } from "./topicLinks";
-import { confirmProjectIn } from "./projects";
+import { confirmProjectIn, pruneEmptyAutoProjects } from "./projects";
 import { deepEqual } from "./util";
 import type { Actor, MemoryFieldName, MemorySnapshot, Mutation, Revision, WorkspaceState } from "./types";
 
@@ -132,7 +132,9 @@ export function rejectRevision(
   };
   // A rejected create leaves the memory never saved: its pending links can never be approved.
   const orphaned = rejectOrphanedRelations(rejected, ctx, rev.memoryId);
-  const next = rejectStaleTopicLinks(rejectStalePendingLinks(orphaned, ctx, rev.memoryId), ctx, rev.memoryId);
+  const relinked = rejectStaleTopicLinks(rejectStalePendingLinks(orphaned, ctx, rev.memoryId), ctx, rev.memoryId);
+  // The last proposal naming an unconfirmed agent project is gone: remove the project (and its empty folder) too.
+  const next = pruneEmptyAutoProjects(relinked, [rev.snapshot.projectId]);
   return { state: next, value: next.revisions[rev.id] };
 }
 
@@ -241,6 +243,7 @@ export function rejectAllDetailed(
     next = rejectStalePendingLinks(rejectOrphanedRelations(next, ctx, m), ctx, m);
     next = rejectStaleTopicLinks(next, ctx, m);
   }
+  next = pruneEmptyAutoProjects(next, revIds.map((id) => revisions[id].snapshot.projectId));
   return { state: next, value: { rejectedRevisionIds: revIds, rejectedRelationIds: relIds, ignoredIds: ignored } };
 }
 

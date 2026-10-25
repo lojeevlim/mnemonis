@@ -446,14 +446,17 @@ describe("pending semantics", () => {
     expect(ok2.state.projects[p.id]).toEqual(ok.state.projects[p.id]);
   });
 
-  it("rejecting leaves the project (and its folder) unconfirmed and the memory unsaved", () => {
+  // Behaviour change (F2): rejecting the LAST proposal that names an unconfirmed agent project now prunes the
+  // project and its empty folder; while another proposal still names it, both stay (next test).
+  it("rejecting the last proposal prunes the unconfirmed project and its empty folder; the memory stays unsaved", () => {
     const { ctx, state } = setup();
     const m = createMemory(state, ctx, { title: "Plan", project: { name: "Acme" }, actor: AGENT });
     const p = projectsOf(m.state)[0];
     const r = rejectRevision(m.state, ctx, { revisionId: m.value.revisionId, actor: USER });
-    expect(r.state.projects[p.id]).toMatchObject({ confirmed: false, autoCreated: true });
+    expect(r.state.projects[p.id]).toBeUndefined();
     expect(listMemories(r.state)).toEqual([]);
-    expect(r.state.collections[p.collectionId as string]).toBeDefined();
+    expect(r.state.collections[p.collectionId as string]).toBeUndefined();
+    expect(validateWorkspaceState(r.state).ok).toBe(true);
   });
 
   it("a user saving a memory into the project, or confirming it, acknowledges it", () => {
@@ -474,7 +477,13 @@ describe("pending semantics", () => {
     const p = projectsOf(m.state)[0];
     const again = createMemory(m.state, ctx, { title: "Two", project: { name: "Acme" }, actor: AGENT });
     expect(again.state.projects[p.id].confirmed).toBe(false);
-    const rej = rejectRevision(m.state, ctx, { revisionId: m.value.revisionId, actor: USER }).state;
+    // Reject only the first proposal: "Two" still names the project, so project and folder stay.
+    const rej1 = rejectRevision(again.state, ctx, { revisionId: m.value.revisionId, actor: USER }).state;
+    expect(rej1.projects[p.id]).toBeDefined();
+    // Confirmed by the user, the project survives the last rejection (only unconfirmed ones are pruned).
+    const kept = confirmProject(rej1, { id: p.id, actor: USER }).state;
+    const rej = rejectRevision(kept, ctx, { revisionId: again.value.revisionId, actor: USER }).state;
+    expect(rej.projects[p.id]).toBeDefined();
     const del = deleteCollection(rej, { id: p.collectionId as string }).state;
     expect(del.projects[p.id].collectionId).toBeNull();
     expect(validateWorkspaceState(del).ok).toBe(true);

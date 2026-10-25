@@ -13,7 +13,7 @@ import type {
 } from "./types";
 import { assertActor, assertIdentityLimits, assertWithinLimits } from "./limits";
 import { assertNotBothCollectionFields } from "./collectionDefault";
-import { assertNotBothProjectFields, confirmProjectIn, getProject, resolvePlacement, type ProjectInput } from "./projects";
+import { assertNotBothProjectFields, confirmProjectIn, getProject, pruneEmptyAutoProjects, resolvePlacement, type ProjectInput } from "./projects";
 import { autoRelate } from "./titlePrefix";
 import { autoRelateTopics } from "./topicLinks";
 import { describeChange } from "./versioning";
@@ -98,7 +98,8 @@ export function appendRevision(
   const hasBase = saved || pending;
   const base = hasBase ? baseSnapshot(state, p.memoryId, p.actor) : undefined;
   assertWithinLimits(p.snapshot, p.actor, base);
-  if (base && deepEqual(base, p.snapshot)) return { state, value: null };
+  // A no-op write may still have created a project while resolving placement: drop it when nothing uses it.
+  if (base && deepEqual(base, p.snapshot)) return { state: pruneEmptyAutoProjects(state, [p.snapshot.projectId]), value: null };
 
   const now = ctx.now();
   const revisions = { ...state.revisions };
@@ -106,7 +107,7 @@ export function appendRevision(
 
   // An agent taking back its own proposal (snapshot == saved) just withdraws it.
   if (p.actor.kind === "agent" && saved && deepEqual(saved.snapshot, p.snapshot)) {
-    return { state: { ...state, revisions }, value: null };
+    return { state: pruneEmptyAutoProjects({ ...state, revisions }, [pending?.snapshot.projectId]), value: null };
   }
 
   const isUser = p.actor.kind === "user";
@@ -127,7 +128,9 @@ export function appendRevision(
   revisions[rev.id] = rev;
   // A user saving a memory that sits in an unconfirmed (agent-created) project acknowledges that project.
   const base2: WorkspaceState = { ...state, revisions };
-  return { state: isUser ? confirmProjectIn(base2, p.snapshot.projectId) : base2, value: rev };
+  const saved2 = isUser ? confirmProjectIn(base2, p.snapshot.projectId) : base2;
+  // The superseded proposal may have been the last one naming an unconfirmed agent project.
+  return { state: pruneEmptyAutoProjects(saved2, [pending?.snapshot.projectId]), value: rev };
 }
 
 const view = (state: WorkspaceState, id: string): Memory => getMemory(state, id) as Memory;

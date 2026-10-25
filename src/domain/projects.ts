@@ -83,6 +83,9 @@ const SEGMENT = /^[a-z0-9._~-]+$/;
  * Canonical "host/owner/repo" (lowercase) of a git remote, or null when `input` is not an http(s), ssh:// or
  * scp-style (git@host:owner/repo) remote, is longer than 200 characters, or is otherwise unusable. Strips the
  * scheme, userinfo / credentials, port, query / fragment, a trailing "/" and ".git". Never returns credentials.
+ *
+ * SECURITY: only the syntax is checked. Loopback / private / link-local hosts (localhost, 127.0.0.1, 10.x, ...)
+ * are accepted as plain strings, so the value is an identifier and MUST NEVER be fetched, resolved or connected to.
  */
 export function normalizeRepoUrl(input: unknown): string | null {
   if (typeof input !== "string") return null;
@@ -141,10 +144,14 @@ interface CheckedInput {
   workspace: string | null;
 }
 
-/** A project name: 1-100 chars after trimming, no control characters, not a reserved word. */
+/** Unicode format characters (zero-width joiners, bidi overrides, BOM, ...): invisible, so they could spoof a name. */
+const FORMAT_CHARS = /\p{Cf}/u;
+
+/** A project name: 1-100 chars after trimming and NFC normalisation, no control / format characters, not a reserved word. */
 export function checkProjectName(raw: unknown): string {
   if (typeof raw !== "string") throw invalid("project name must be a string");
-  const name = raw.trim().replace(/\s+/g, " ");
+  if (FORMAT_CHARS.test(raw)) throw invalid("project name must not contain invisible formatting characters");
+  const name = raw.normalize("NFC").trim().replace(/\s+/g, " ");
   if (!name) throw invalid("project name must not be empty");
   if (name.length > LIMITS.projectName) throw tooLarge(`Project name is too long (max ${LIMITS.projectName} characters)`);
   if (CONTROL_CHARS.test(raw)) throw invalid("project name must not contain control characters");
@@ -230,29 +237,41 @@ export function projectOfMemory(
 
 // ---- creation ----------------------------------------------------------------------------------------------------
 
-/** Links `project` to its default folder: adopts the oldest unlinked collection of the same name, else creates one. */
-function attachDefaultCollection(state: WorkspaceState, ctx: DomainContext, project: Project): { state: WorkspaceState; project: Project } {
-  const adoptable = Object.values(state.collections)
-    .filter((c) => normalizeTitle(c.name) === project.key && (c.projectId ?? null) === null)
-    .sort((a, b) => (a.createdAt === b.createdAt ? (a.id < b.id ? -1 : 1) : a.createdAt < b.createdAt ? -1 : 1))[0];
-  let col: Collection | undefined = adoptable;
-  let next = state;
-  if (!col) {
-    try {
-      assertCollectionRoom(state, project.name);
-    } catch (e) {
-      if (e instanceof DomainError && e.code === "too_large") return { state, project }; // cap reached: no folder
-      throw e;
-    }
-    const created = createCollection(state, ctx, { name: project.name });
-    next = created.state;
-    col = created.value;
+const oldestCollectionFirst = (a: Collection, b: Collection): number =>
+  a.createdAt === b.createdAt ? (a.id < b.id ? -1 : a.id > b.id ? 1 : 0) : a.createdAt < b.createdAt ? -1 : 1;
+
+/** The oldest collection named like `key` that no project owns yet (a user's folder a project may adopt). */
+const adoptableCollection = (state: WorkspaceState, key: string): Collection | undefined =>
+  Object.values(state.collections)
+    .filter((c) => normalizeTitle(c.name) === key && (c.projectId ?? null) === null)
+    .sort(oldestCollectionFirst)[0];
+
+const linkCollection = (state: WorkspaceState, col: Collection, project: Project): { state: WorkspaceState; project: Project } => ({
+  state: { ...state, collections: { ...state.collections, [col.id]: { ...col, projectId: project.id } } },
+  project: { ...project, collectionId: col.id },
+});
+
+/**
+ * Links a NEW `project` to its default folder.
+ *  - a user's project adopts the oldest unlinked collection of the same name, else a fresh one is created;
+ *  - an agent's project NEVER adopts (or even touches) an existing collection: it gets a fresh one only when no
+ *    collection of that name exists at all, otherwise it has no folder until a user confirms it (confirmProject
+ *    then adopts the oldest unlinked same-named collection).
+ * At the collection cap no folder is created.
+ */
+function attachDefaultCollection(state: WorkspaceState, ctx: DomainContext, project: Project, actor: Actor): { state: WorkspaceState; project: Project } {
+  const named = Object.values(state.collections).some((c) => normalizeTitle(c.name) === project.key);
+  if (actor.kind === "agent" && named) return { state, project };
+  const adoptable = actor.kind === "user" ? adoptableCollection(state, project.key) : undefined;
+  if (adoptable) return linkCollection(state, adoptable, project);
+  try {
+    assertCollectionRoom(state, project.name);
+  } catch (e) {
+    if (e instanceof DomainError && e.code === "too_large") return { state, project }; // cap reached: no folder
+    throw e;
   }
-  const linked = { ...col, projectId: project.id };
-  return {
-    state: { ...next, collections: { ...next.collections, [col.id]: linked } },
-    project: { ...project, collectionId: col.id },
-  };
+  const created = createCollection(state, ctx, { name: project.name });
+  return linkCollection(created.state, created.value, project);
 }
 
 function nextFreeName(state: WorkspaceState, name: string): string {
@@ -288,7 +307,7 @@ function insertProject(state: WorkspaceState, ctx: DomainContext, c: CheckedInpu
     confirmed: !isAgent,
   };
   assertSafeId(project.id, "project");
-  const withCollection = attachDefaultCollection(state, ctx, project);
+  const withCollection = attachDefaultCollection(state, ctx, project, actor);
   return {
     state: { ...withCollection.state, projects: { ...withCollection.state.projects, [project.id]: withCollection.project } },
     project: withCollection.project,
@@ -311,7 +330,22 @@ export function createProject(
     ...(args.repo !== undefined && { repo: args.repo }),
     ...(args.workspace !== undefined && { workspace: args.workspace }),
   });
+  if (args.actor.kind === "user") {
+    // A user naming a project an agent made (still unconfirmed) takes it over: same id, now confirmed.
+    const existing = findProjectByKey(state, checked.key);
+    if (existing && existing.autoCreated && !existing.confirmed) return takeOver(state, existing, checked);
+  }
   const r = insertProject(state, ctx, checked, args.actor);
+  return { state: r.state, value: r.project };
+}
+
+/** Confirms `p` (adopting a same-named folder when it has none) and adds the repo / workspace the user supplied. */
+function takeOver(state: WorkspaceState, p: Project, c: CheckedInput): Mutation<Project> {
+  const sources = [...p.sources];
+  if (c.repo !== null && !hasSource(p, "repo", c.repo)) sources.push({ kind: "repo", ref: c.repo });
+  if (c.workspace !== null && !hasSource(p, "workspace", c.workspace)) sources.push({ kind: "workspace", ref: c.workspace });
+  if (sources.length > LIMITS.maxProjectSources) throw tooLarge(`Too many project sources (max ${LIMITS.maxProjectSources})`);
+  const r = confirmAndAdopt(state, { ...p, sources });
   return { state: r.state, value: r.project };
 }
 
@@ -327,9 +361,29 @@ export function confirmProject(state: WorkspaceState, args: { id: string; actor:
   requireUser(args.actor);
   const p = getProject(state, args.id);
   if (!p) throw new DomainError("project_not_found", `Project not found: ${args.id}`);
-  if (p.confirmed) return { state, value: p };
-  const next = { ...p, confirmed: true };
-  return { state: { ...state, projects: { ...state.projects, [p.id]: next } }, value: next };
+  if (p.confirmed && (collectionOf(state, p) || !adoptableCollection(state, p.key))) return { state, value: p };
+  const r = confirmAndAdopt(state, p);
+  return { state: r.state, value: r.project };
+}
+
+/** The project's own folder: it exists and points back at the project. */
+const collectionOf = (state: WorkspaceState, p: Project): Collection | undefined => {
+  const col = safeGet(state.collections, p.collectionId);
+  return col && col.projectId === p.id ? col : undefined;
+};
+
+/**
+ * Marks `p` confirmed and, when it has no folder of its own, adopts the oldest unlinked collection of the same
+ * name (never creates one). This is the only way a folder created by a user becomes an agent project's folder.
+ */
+function confirmAndAdopt(state: WorkspaceState, p: Project): { state: WorkspaceState; project: Project } {
+  let next = state;
+  let project: Project = { ...p, confirmed: true };
+  if (!collectionOf(state, p)) {
+    const adoptable = adoptableCollection(state, p.key);
+    if (adoptable) ({ state: next, project } = linkCollection(state, adoptable, project));
+  }
+  return { state: { ...next, projects: { ...next.projects, [p.id]: project } }, project };
 }
 
 /**
@@ -355,7 +409,73 @@ export function renameProject(state: WorkspaceState, args: { id: string; name: s
 export function confirmProjectIn(state: WorkspaceState, projectId: string | null): WorkspaceState {
   const p = getProject(state, projectId);
   if (!p || p.confirmed) return state;
-  return { ...state, projects: { ...state.projects, [p.id]: { ...p, confirmed: true } } };
+  return confirmAndAdopt(state, p).state;
+}
+
+// ---- deletion and cleanup ----------------------------------------------------------------------------------------
+
+/** Project / collection ids the CURRENT state still points at: saved-or-pending memories plus open proposals. */
+function referencedIds(state: WorkspaceState): { projects: Set<string>; collections: Set<string> } {
+  const projects = new Set<string>();
+  const collections = new Set<string>();
+  const add = (s: { projectId: string | null; collectionId: string | null }): void => {
+    if (s.projectId !== null) projects.add(s.projectId);
+    if (s.collectionId !== null) collections.add(s.collectionId);
+  };
+  for (const m of listMemories(state, { includePending: true })) add(m);
+  for (const r of Object.values(state.revisions)) if (r.status === "pending") add(r.snapshot);
+  return { projects, collections };
+}
+
+const unlinkAll = (collections: WorkspaceState["collections"], projectId: string): WorkspaceState["collections"] => {
+  const out = { ...collections };
+  for (const c of Object.values(out)) if (c.projectId === projectId) out[c.id] = { ...c, projectId: null };
+  return out;
+};
+
+/**
+ * System cleanup, pure and idempotent: removes each candidate project that an agent created, nobody has
+ * confirmed and no saved / pending snapshot references any more (its only proposals were rejected, superseded or
+ * withdrawn). Its default collection goes with it only when that collection was made for it (still named like it,
+ * no description), is empty (no memory or proposal uses it) and no other project points at it; otherwise the
+ * collection is merely unlinked. Called in the same transition that rejects / supersedes a proposal, so an agent
+ * cannot leave junk behind to exhaust LIMITS.maxProjects / maxCollections. Confirmed projects are never touched.
+ */
+export function pruneEmptyAutoProjects(state: WorkspaceState, candidateIds: Iterable<string | null | undefined>): WorkspaceState {
+  const ids = [...new Set(candidateIds)].filter((id): id is string => typeof id === "string");
+  const doomed = ids.map((id) => getProject(state, id)).filter((p): p is Project => !!p && p.autoCreated && !p.confirmed);
+  if (doomed.length === 0) return state;
+  const refs = referencedIds(state);
+  let next = state;
+  for (const p of doomed) {
+    if (refs.projects.has(p.id)) continue;
+    const projects = { ...next.projects };
+    delete projects[p.id];
+    let collections = next.collections;
+    const col = collectionOf(next, p);
+    const sharedWith = Object.values(projects).some((q) => q.collectionId === p.collectionId);
+    if (col && col.description === "" && normalizeTitle(col.name) === p.key && !refs.collections.has(col.id) && !sharedWith) {
+      collections = { ...collections };
+      delete collections[col.id];
+    }
+    next = { ...next, projects, collections: unlinkAll(collections, p.id) };
+  }
+  return next;
+}
+
+/**
+ * User only. Deletes a project that no saved / pending memory or open proposal references ("project_in_use"
+ * otherwise; history may keep a dangling projectId, which reads tolerate). Its linked collection is unlinked, NOT
+ * deleted. Agents get "forbidden". Lets a user clear junk so the project caps can never be exhausted for good.
+ */
+export function deleteProject(state: WorkspaceState, args: { id: string; actor: Actor }): Mutation {
+  requireUser(args.actor);
+  const p = getProject(state, args.id);
+  if (!p) throw new DomainError("project_not_found", `Project not found: ${args.id}`);
+  if (referencedIds(state).projects.has(p.id)) throw new DomainError("project_in_use", "Project still has memories");
+  const projects = { ...state.projects };
+  delete projects[p.id];
+  return { state: { ...state, projects, collections: unlinkAll(state.collections, p.id) }, value: undefined };
 }
 
 // ---- resolution --------------------------------------------------------------------------------------------------
@@ -542,12 +662,16 @@ function displayName(votes: string[]): string {
  * keys are not derived again, so applying it twice changes nothing.
  */
 export function deriveProjectsFromPrefixes(state: WorkspaceState): WorkspaceState {
-  const memories = listMemories(state).filter((m) => !m.archived);
+  // Hostile input guard: an imported title may be megabytes long. A title longer than LIMITS.title can never be a
+  // project name (<= 100), so it takes no part in any scan below, and nothing here does super-linear work.
+  const memories = listMemories(state).filter((m) => !m.archived && m.title.length <= LIMITS.title);
+  const push = <T>(map: Map<string, T[]>, key: string, v: T): void => {
+    const list = map.get(key);
+    if (list) list.push(v);
+    else map.set(key, [v]);
+  };
   const real = new Map<string, { id: string; title: string; createdAt: string }[]>();
-  for (const m of memories) {
-    const key = normalizeTitle(m.title);
-    real.set(key, [...(real.get(key) ?? []), m]);
-  }
+  for (const m of memories) push(real, normalizeTitle(m.title), m);
   const colon = new Map<string, { id: string; raw: string; createdAt: string }[]>();
   const colonOf = new Set<string>();
   for (const m of memories) {
@@ -556,7 +680,7 @@ export function deriveProjectsFromPrefixes(state: WorkspaceState): WorkspaceStat
     if (m.title.slice(m.title.indexOf(":") + 1).startsWith("//")) continue; // a URL, not `<project>: <data>`
     colonOf.add(m.id);
     const key = normalizeTitle(prefix);
-    colon.set(key, [...(colon.get(key) ?? []), { id: m.id, raw: collapse(prefix), createdAt: m.createdAt }]);
+    push(colon, key, { id: m.id, raw: collapse(prefix), createdAt: m.createdAt });
   }
   const keys = [...new Set([...colon.keys(), ...real.keys()])].filter((k) => k !== "");
   const keySet = new Set(keys);
@@ -565,13 +689,14 @@ export function deriveProjectsFromPrefixes(state: WorkspaceState): WorkspaceStat
     if (colonOf.has(m.id)) continue;
     const c = collapse(m.title);
     let found: { key: string; raw: string } | undefined;
-    for (let n = c.length - 1; n > 0 && !found; n--) {
+    // A prefix key is at most LIMITS.projectName characters, so only the first ~100 characters are candidates.
+    for (let n = Math.min(c.length - 1, LIMITS.projectName); n > 0 && !found; n--) {
       if (c[n] !== " " && c[n] !== ",") continue;
       const raw = c.slice(0, n);
       const k = raw.toLowerCase();
       if (keySet.has(k) && !k.includes("/")) found = { key: k, raw };
     }
-    if (found) legacy.set(found.key, [...(legacy.get(found.key) ?? []), { id: m.id, raw: found.raw, createdAt: m.createdAt }]);
+    if (found) push(legacy, found.key, { id: m.id, raw: found.raw, createdAt: m.createdAt });
   }
 
   interface Candidate {
@@ -584,13 +709,15 @@ export function deriveProjectsFromPrefixes(state: WorkspaceState): WorkspaceStat
   const found: Candidate[] = [];
   for (const key of keys) {
     const parents = real.get(key) ?? [];
-    const followers = (legacy.get(key) ?? []).filter((f) => !parents.some((p) => p.id === f.id));
+    const parentIds = new Set(parents.map((p) => p.id));
+    const followers = (legacy.get(key) ?? []).filter((f) => !parentIds.has(f.id));
     const children = colon.get(key) ?? [];
     const qualifies = parents.length > 0 ? children.length + followers.length > 0 : !key.includes("/") && children.length > 0;
     if (!qualifies || taken.has(key) || RESERVED_PROJECT_NAMES.has(key)) continue;
     const members = [...parents, ...children, ...followers];
     const name = displayName([...children, ...followers].map((c) => c.raw).concat(parents.map((p) => collapse(p.title))));
-    if (name.length > LIMITS.projectName || CONTROL_CHARS.test(name) || normalizeTitle(name) !== key) continue;
+    if (name.length > LIMITS.projectName || CONTROL_CHARS.test(name) || FORMAT_CHARS.test(name) || name !== name.normalize("NFC")) continue;
+    if (normalizeTitle(name) !== key) continue;
     found.push({ key, name, size: members.length, createdAt: members.map((m) => m.createdAt).sort()[0] });
   }
   // Keep the busiest keys when more than the cap qualify (deterministic: size desc, then key).

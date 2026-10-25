@@ -18,6 +18,14 @@ export const LIMITS = {
   actorName: 100,
   collectionName: 100,
   maxCollections: 200,
+  projectName: 100,
+  maxProjects: 200,
+  /** Unconfirmed (agent-created) projects allowed at once. */
+  maxAutoProjects: 25,
+  maxProjectAliases: 10,
+  maxProjectSources: 10,
+  repoUrl: 200,
+  workspaceRef: 64,
 } as const;
 
 const tooLarge = (msg: string) => new DomainError("too_large", msg);

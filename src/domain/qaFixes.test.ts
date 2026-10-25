@@ -68,7 +68,7 @@ describe("collections vs pending proposals", () => {
 });
 
 describe("current saved revision is chain-based, not key-order based", () => {
-  const snap = { title: "T", content: "", type: "fact", tags: [], collectionId: null, archived: false, metadata: {} };
+  const snap = { title: "T", content: "", type: "fact", tags: [], collectionId: null, projectId: null, archived: false, metadata: {} };
   const rev = (id: string, parent: string | null, savedAt: string, status = "saved") => ({
     id,
     memoryId: "m",
@@ -83,11 +83,12 @@ describe("current saved revision is chain-based, not key-order based", () => {
     decidedAt: savedAt,
   });
   const state = (revs: any[]): any => ({
-    schemaVersion: 2,
+    schemaVersion: 3,
     memories: { m: { id: "m", createdAt: "t", source: "s", provenance: { origin: "user", createdBy: "a" } } },
     revisions: Object.fromEntries(revs.map((r) => [r.id, r])),
     relations: {},
     collections: {},
+    projects: {},
   });
 
   it("ids \"9\" then \"10\" (JS iterates 9, 10) interpret the chain correctly, whatever the key order", () => {

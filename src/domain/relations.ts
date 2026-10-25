@@ -394,5 +394,8 @@ export function deleteCollection(state: WorkspaceState, args: { id: string }): M
   }
   const collections = { ...state.collections };
   delete collections[args.id];
-  return { state: { ...state, collections }, value: undefined };
+  // A project whose default folder is gone keeps existing, just without a folder.
+  const projects = { ...state.projects };
+  for (const p of Object.values(projects)) if (p.collectionId === args.id) projects[p.id] = { ...p, collectionId: null };
+  return { state: { ...state, collections, projects }, value: undefined };
 }

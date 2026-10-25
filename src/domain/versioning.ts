@@ -9,6 +9,7 @@ import {
 } from "./relations";
 import { autoRelate, rejectStalePendingLinks } from "./titlePrefix";
 import { rejectStaleTopicLinks, topicRelator } from "./topicLinks";
+import { confirmProjectIn } from "./projects";
 import { deepEqual } from "./util";
 import type { Actor, MemoryFieldName, MemorySnapshot, Mutation, Revision, WorkspaceState } from "./types";
 
@@ -21,6 +22,7 @@ export const FIELD_LABEL: Record<MemoryFieldName, string> = {
   type: "type",
   tags: "tags",
   collectionId: "collection",
+  projectId: "project",
   archived: "archived",
   metadata: "metadata",
 };
@@ -65,12 +67,21 @@ function approveMany(state: WorkspaceState, ctx: DomainContext, ids: string[]): 
     const stamp = ctx.now();
     // The proposal may point at a collection deleted meanwhile: never save a dangling collectionId.
     const cid = rev.snapshot.collectionId;
-    const snapshot =
-      cid !== null && !Object.hasOwn(next.collections, cid) ? { ...rev.snapshot, collectionId: null } : rev.snapshot;
+    // Same for the project: never save a dangling projectId. Approving a memory in an agent-created project confirms it.
+    const pid = rev.snapshot.projectId;
+    const missing = (cid !== null && !Object.hasOwn(next.collections, cid)) || (pid !== null && !Object.hasOwn(next.projects, pid));
+    const snapshot = missing
+      ? {
+          ...rev.snapshot,
+          collectionId: cid !== null && !Object.hasOwn(next.collections, cid) ? null : cid,
+          projectId: pid !== null && !Object.hasOwn(next.projects, pid) ? null : pid,
+        }
+      : rev.snapshot;
     next = {
       ...next,
       revisions: { ...next.revisions, [id]: { ...rev, snapshot, status: "saved", savedAt: stamp, decidedAt: stamp } },
     };
+    next = confirmProjectIn(next, snapshot.projectId);
   }
   return next;
 }
@@ -90,7 +101,7 @@ function relateApproved(before: WorkspaceState, approved: WorkspaceState, ctx: D
     const memoryId = next.revisions[id].memoryId;
     const prev = currentSavedRevision(before, memoryId)?.snapshot;
     const snap = next.revisions[id].snapshot;
-    if (prev?.title !== snap.title) next = autoRelate(next, ctx, actor, memoryId);
+    if (prev?.title !== snap.title) next = autoRelate(next, ctx, actor, memoryId, { onlyDrop: snap.projectId !== null });
     if (!prev || prev.title !== snap.title || !deepEqual(prev.tags, snap.tags)) next = relateTopics(next, ctx, memoryId);
   }
   return next;

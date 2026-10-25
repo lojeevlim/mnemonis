@@ -1,0 +1,319 @@
+{
+ "schemaVersion": 2,
+ "memories": {
+  "m1": {
+   "id": "m1",
+   "createdAt": "2026-01-01T00:00:00.000Z",
+   "source": "manual",
+   "provenance": {
+    "origin": "user",
+    "createdBy": "me"
+   }
+  },
+  "m2": {
+   "id": "m2",
+   "createdAt": "2026-01-02T00:00:00.000Z",
+   "source": "manual",
+   "provenance": {
+    "origin": "user",
+    "createdBy": "me"
+   }
+  },
+  "m3": {
+   "id": "m3",
+   "createdAt": "2026-01-03T00:00:00.000Z",
+   "source": "manual",
+   "provenance": {
+    "origin": "user",
+    "createdBy": "me"
+   }
+  },
+  "m4": {
+   "id": "m4",
+   "createdAt": "2026-01-04T00:00:00.000Z",
+   "source": "manual",
+   "provenance": {
+    "origin": "user",
+    "createdBy": "me"
+   }
+  },
+  "m5": {
+   "id": "m5",
+   "createdAt": "2026-01-05T00:00:00.000Z",
+   "source": "manual",
+   "provenance": {
+    "origin": "user",
+    "createdBy": "me"
+   }
+  },
+  "m6": {
+   "id": "m6",
+   "createdAt": "2026-01-06T00:00:00.000Z",
+   "source": "manual",
+   "provenance": {
+    "origin": "user",
+    "createdBy": "me"
+   }
+  },
+  "m7": {
+   "id": "m7",
+   "createdAt": "2026-01-07T00:00:00.000Z",
+   "source": "manual",
+   "provenance": {
+    "origin": "user",
+    "createdBy": "me"
+   }
+  },
+  "m8": {
+   "id": "m8",
+   "createdAt": "2026-01-08T00:00:00.000Z",
+   "source": "manual",
+   "provenance": {
+    "origin": "user",
+    "createdBy": "me"
+   }
+  },
+  "m9": {
+   "id": "m9",
+   "createdAt": "2026-01-09T00:00:00.000Z",
+   "source": "manual",
+   "provenance": {
+    "origin": "user",
+    "createdBy": "me"
+   }
+  }
+ },
+ "revisions": {
+  "rev_m1": {
+   "id": "rev_m1",
+   "memoryId": "m1",
+   "snapshot": {
+    "title": "Mnemonis",
+    "content": "c Mnemonis",
+    "type": "fact",
+    "tags": [],
+    "collectionId": "col_a",
+    "archived": false,
+    "metadata": {}
+   },
+   "parentRevisionId": null,
+   "createdAt": "2026-01-01T00:00:00.000Z",
+   "author": "me",
+   "origin": "user",
+   "status": "saved",
+   "note": "Created",
+   "savedAt": "2026-01-01T00:00:00.000Z",
+   "decidedAt": "2026-01-01T00:00:00.000Z"
+  },
+  "rev_m2": {
+   "id": "rev_m2",
+   "memoryId": "m2",
+   "snapshot": {
+    "title": "Mnemonis: web ui",
+    "content": "c Mnemonis: web ui",
+    "type": "fact",
+    "tags": [],
+    "collectionId": "col_a",
+    "archived": false,
+    "metadata": {}
+   },
+   "parentRevisionId": null,
+   "createdAt": "2026-01-02T00:00:00.000Z",
+   "author": "me",
+   "origin": "user",
+   "status": "saved",
+   "note": "Created",
+   "savedAt": "2026-01-02T00:00:00.000Z",
+   "decidedAt": "2026-01-02T00:00:00.000Z"
+  },
+  "rev_m3": {
+   "id": "rev_m3",
+   "memoryId": "m3",
+   "snapshot": {
+    "title": "mnemonis:  api",
+    "content": "c mnemonis:  api",
+    "type": "fact",
+    "tags": [],
+    "collectionId": "col_b",
+    "archived": false,
+    "metadata": {}
+   },
+   "parentRevisionId": null,
+   "createdAt": "2026-01-03T00:00:00.000Z",
+   "author": "me",
+   "origin": "user",
+   "status": "saved",
+   "note": "Created",
+   "savedAt": "2026-01-03T00:00:00.000Z",
+   "decidedAt": "2026-01-03T00:00:00.000Z"
+  },
+  "rev_m4": {
+   "id": "rev_m4",
+   "memoryId": "m4",
+   "snapshot": {
+    "title": "Acme Portal: login flow",
+    "content": "c Acme Portal: login flow",
+    "type": "fact",
+    "tags": [],
+    "collectionId": null,
+    "archived": false,
+    "metadata": {}
+   },
+   "parentRevisionId": null,
+   "createdAt": "2026-01-04T00:00:00.000Z",
+   "author": "me",
+   "origin": "user",
+   "status": "saved",
+   "note": "Created",
+   "savedAt": "2026-01-04T00:00:00.000Z",
+   "decidedAt": "2026-01-04T00:00:00.000Z"
+  },
+  "rev_m5": {
+   "id": "rev_m5",
+   "memoryId": "m5",
+   "snapshot": {
+    "title": "Acme portal: billing",
+    "content": "c Acme portal: billing",
+    "type": "fact",
+    "tags": [],
+    "collectionId": null,
+    "archived": false,
+    "metadata": {}
+   },
+   "parentRevisionId": null,
+   "createdAt": "2026-01-05T00:00:00.000Z",
+   "author": "me",
+   "origin": "user",
+   "status": "saved",
+   "note": "Created",
+   "savedAt": "2026-01-05T00:00:00.000Z",
+   "decidedAt": "2026-01-05T00:00:00.000Z"
+  },
+  "rev_m6": {
+   "id": "rev_m6",
+   "memoryId": "m6",
+   "snapshot": {
+    "title": "Standalone note",
+    "content": "c Standalone note",
+    "type": "fact",
+    "tags": [],
+    "collectionId": null,
+    "archived": false,
+    "metadata": {}
+   },
+   "parentRevisionId": null,
+   "createdAt": "2026-01-06T00:00:00.000Z",
+   "author": "me",
+   "origin": "user",
+   "status": "saved",
+   "note": "Created",
+   "savedAt": "2026-01-06T00:00:00.000Z",
+   "decidedAt": "2026-01-06T00:00:00.000Z"
+  },
+  "rev_m7": {
+   "id": "rev_m7",
+   "memoryId": "m7",
+   "snapshot": {
+    "title": "See http://example.com/x",
+    "content": "c See http://example.com/x",
+    "type": "fact",
+    "tags": [],
+    "collectionId": null,
+    "archived": false,
+    "metadata": {}
+   },
+   "parentRevisionId": null,
+   "createdAt": "2026-01-07T00:00:00.000Z",
+   "author": "me",
+   "origin": "user",
+   "status": "saved",
+   "note": "Created",
+   "savedAt": "2026-01-07T00:00:00.000Z",
+   "decidedAt": "2026-01-07T00:00:00.000Z"
+  },
+  "rev_m8": {
+   "id": "rev_m8",
+   "memoryId": "m8",
+   "snapshot": {
+    "title": "Ghost: only pending",
+    "content": "c Ghost: only pending",
+    "type": "fact",
+    "tags": [],
+    "collectionId": null,
+    "archived": false,
+    "metadata": {}
+   },
+   "parentRevisionId": null,
+   "createdAt": "2026-01-08T00:00:00.000Z",
+   "author": "bot",
+   "origin": "agent",
+   "status": "pending",
+   "note": "Created",
+   "savedAt": null,
+   "decidedAt": null
+  },
+  "rev_m9": {
+   "id": "rev_m9",
+   "memoryId": "m9",
+   "snapshot": {
+    "title": "Notes: archived one",
+    "content": "c Notes: archived one",
+    "type": "fact",
+    "tags": [],
+    "collectionId": null,
+    "archived": true,
+    "metadata": {}
+   },
+   "parentRevisionId": null,
+   "createdAt": "2026-01-09T00:00:00.000Z",
+   "author": "me",
+   "origin": "user",
+   "status": "saved",
+   "note": "Created",
+   "savedAt": "2026-01-09T00:00:00.000Z",
+   "decidedAt": "2026-01-09T00:00:00.000Z"
+  }
+ },
+ "relations": {
+  "rel_1": {
+   "id": "rel_1",
+   "fromId": "m2",
+   "toId": "m1",
+   "label": "part of",
+   "provenance": {
+    "origin": "process",
+    "createdBy": "me",
+    "process": "title-prefix"
+   },
+   "createdAt": "2026-01-02T00:00:00.000Z",
+   "status": "saved",
+   "decidedAt": "2026-01-02T00:00:00.000Z"
+  }
+ },
+ "collections": {
+  "col_a": {
+   "id": "col_a",
+   "name": "Mnemonis",
+   "description": "",
+   "createdAt": "2026-01-01T00:00:00.000Z"
+  },
+  "col_b": {
+   "id": "col_b",
+   "name": "mnemonis",
+   "description": "dup",
+   "createdAt": "2026-01-02T00:00:00.000Z"
+  },
+  "col_c": {
+   "id": "col_c",
+   "name": "Acme Portal",
+   "description": "",
+   "createdAt": "2026-01-03T00:00:00.000Z"
+  },
+  "col_d": {
+   "id": "col_d",
+   "name": "Misc",
+   "description": "",
+   "createdAt": "2026-01-03T00:00:00.000Z"
+  }
+ }
+}

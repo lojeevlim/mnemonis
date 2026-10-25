@@ -37,16 +37,26 @@ function titleMap(state: WorkspaceState): Map<string, string> {
  * auto-links after a rename. Links are created as `actor` (pending for an agent, saved for a user). Manual
  * relations are never touched; a missing parent is skipped.
  *
+ * With `onlyDrop` (the memory has a project) no new link is added, stale ones are still dropped.
+ *
  * Note: a rejected / removed auto-link does not block proposing the same link again, so a user who removed
  * one will see it re-created the next time the title of either end changes.
  */
-export function autoRelate(state: WorkspaceState, ctx: DomainContext, actor: Actor, memoryId: string): WorkspaceState {
+export function autoRelate(
+  state: WorkspaceState,
+  ctx: DomainContext,
+  actor: Actor,
+  memoryId: string,
+  opts: { onlyDrop?: boolean } = {},
+): WorkspaceState {
   const titles = titleMap(state);
   // What the actor just wrote: an agent's title lives in its open proposal until a user approves it.
   const own = actor.kind === "agent" ? pendingRevisionMap(state)[memoryId]?.snapshot.title : undefined;
   const titleOf = (id: string): string | undefined => (id === memoryId && own !== undefined ? own : titles.get(id));
 
   let next = dropStaleLinks(state, ctx, actor, memoryId, titleOf);
+  // A memory that belongs to a project is grouped by the project: the title-prefix fallback only cleans up here.
+  if (opts.onlyDrop) return next;
   const link = (fromId: string, toId: string): void => {
     try {
       next = addRelation(next, ctx, {

@@ -24,6 +24,8 @@ export interface ResolveCollectionInput {
   migrating?: boolean;
   /** False for updates: only an explicit collection/collectionId is honoured, nothing is ever re-defaulted. */
   applyDefault?: boolean;
+  /** True when a project already decided the placement: the title-prefix collection rule is skipped (demoted). */
+  skipPrefix?: boolean;
 }
 
 const invalid = (msg: string) => new DomainError("invalid_input", msg);
@@ -115,7 +117,7 @@ export function resolveCollection(
     return { state, collectionId: null };
   }
 
-  const prefix = parseTitlePrefix(input.title);
+  const prefix = input.skipPrefix ? null : parseTitlePrefix(input.title);
   const byPrefix = prefix === null ? undefined : findByName(state, prefix);
   if (byPrefix) return { state, collectionId: byPrefix.id };
 

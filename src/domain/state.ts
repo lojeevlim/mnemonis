@@ -1,10 +1,10 @@
-import { ORIGINS, RELATION_STATUSES, REVISION_STATUSES, type Relation, type WorkspaceState } from "./types";
+import { ORIGINS, PROJECT_SOURCE_KINDS, RELATION_STATUSES, REVISION_STATUSES, type Relation, type WorkspaceState } from "./types";
 import { isJsonValue, isPlainObject, isReservedKey } from "./util";
 
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 3;
 
 export function createEmptyWorkspace(): WorkspaceState {
-  return { schemaVersion: SCHEMA_VERSION, memories: {}, revisions: {}, relations: {}, collections: {} };
+  return { schemaVersion: SCHEMA_VERSION, memories: {}, revisions: {}, relations: {}, collections: {}, projects: {} };
 }
 
 export type ValidationResult =
@@ -43,6 +43,7 @@ function validSnapshot(v: unknown): boolean {
     isStr(v.type) &&
     isStrArray(v.tags) &&
     isStrOrNull(v.collectionId) &&
+    isStrOrNull(v.projectId) &&
     typeof v.archived === "boolean" &&
     isPlainObject(v.metadata) &&
     isJsonValue(v.metadata)
@@ -116,7 +117,8 @@ function validate(raw: Rec): Record<string, Relation> | null {
   const revisions = entriesOf(raw.revisions);
   const relations = entriesOf(raw.relations);
   const collections = entriesOf(raw.collections);
-  if (!memories || !revisions || !relations || !collections) return null;
+  const projects = entriesOf(raw.projects);
+  if (!memories || !revisions || !relations || !collections || !projects) return null;
   const memMap = raw.memories as Rec;
   const revMap = raw.revisions as Rec;
 
@@ -127,6 +129,16 @@ function validate(raw: Rec): Record<string, Relation> | null {
   }
   for (const [, c] of collections) {
     if (!isStr(c.name) || !isStr(c.description) || !isStr(c.createdAt)) return null;
+    if (c.projectId !== undefined && !isStrOrNull(c.projectId)) return null;
+  }
+  for (const [, pr] of projects) {
+    if (!isStr(pr.key) || !isStr(pr.name) || !isStr(pr.createdAt) || !isStr(pr.createdBy)) return null;
+    if (!isStrArray(pr.aliases) || !isStrOrNull(pr.collectionId)) return null;
+    if (typeof pr.autoCreated !== "boolean" || typeof pr.confirmed !== "boolean") return null;
+    if (!Array.isArray(pr.sources)) return null;
+    for (const s of pr.sources) {
+      if (!isPlainObject(s) || !isStr(s.ref) || !isStr(s.kind) || !(PROJECT_SOURCE_KINDS as readonly string[]).includes(s.kind)) return null;
+    }
   }
   for (const [, r] of relations) {
     const p = r.provenance;
@@ -175,7 +187,7 @@ function validate(raw: Rec): Record<string, Relation> | null {
  * Deep structural + referential validation of untrusted (localStorage / imported) data:
  * field types, id === map key, reserved keys, dangling references and cycles in
  * revision parents. Historic revisions may legitimately reference a
- * collection that was later deleted, so snapshot.collectionId is type-checked only.
+ * collection (or project) that was later deleted, so snapshot.collectionId / projectId are type-checked only.
  */
 export function validateWorkspaceState(raw: unknown): ValidationResult {
   if (!isPlainObject(raw)) return CORRUPT;

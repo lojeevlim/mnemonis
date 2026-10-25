@@ -47,6 +47,8 @@ export interface MemorySnapshot {
   type: MemoryType;
   tags: string[];
   collectionId: string | null;
+  /** The project this memory belongs to (null = none). May dangle in history; reads check existence. */
+  projectId: string | null;
   archived: boolean;
   metadata: Metadata;
 }
@@ -58,6 +60,7 @@ export const MEMORY_FIELDS: readonly MemoryFieldName[] = [
   "type",
   "tags",
   "collectionId",
+  "projectId",
   "archived",
   "metadata",
 ];
@@ -132,16 +135,50 @@ export interface Collection {
   name: string;
   description: string;
   createdAt: string;
+  /** The project this collection is the default folder of (absent / null = none). */
+  projectId?: string | null;
+}
+
+export type ProjectSourceKind = "repo" | "workspace" | "prefix" | "manual";
+export const PROJECT_SOURCE_KINDS: readonly ProjectSourceKind[] = ["repo", "workspace", "prefix", "manual"];
+
+/**
+ * Where a project was recognised from. repo = normalised "host/owner/repo"; workspace = opaque client-computed id
+ * (never a path); prefix = a title-prefix key; manual = free text typed by a user.
+ */
+export interface ProjectSource {
+  kind: ProjectSourceKind;
+  ref: string;
+}
+
+export interface Project {
+  /** "prj_<16 hex of sha256(key)>" for migrated projects, a fresh safe id for new ones. */
+  id: string;
+  /** normalizeTitle(name); unique among projects. */
+  key: string;
+  name: string;
+  /** Other normalised keys that resolve to this project (e.g. an old name). */
+  aliases: string[];
+  sources: ProjectSource[];
+  /** Default folder of the project (kept in sync with Collection.projectId). */
+  collectionId: string | null;
+  createdAt: string;
+  createdBy: string;
+  /** Created by an agent (not a user) or derived. */
+  autoCreated: boolean;
+  /** False while an agent-created project has not been approved / acknowledged by a user. */
+  confirmed: boolean;
 }
 
 export type ChangeKind = "create" | "update" | "archive" | "restore";
 
 export interface WorkspaceState {
-  schemaVersion: 2;
+  schemaVersion: 3;
   memories: Record<string, MemoryIdentity>;
   revisions: Record<string, Revision>;
   relations: Record<string, Relation>;
   collections: Record<string, Collection>;
+  projects: Record<string, Project>;
 }
 
 /** Every mutation returns the next state plus a value. */

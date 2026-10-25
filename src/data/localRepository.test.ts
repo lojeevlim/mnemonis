@@ -9,10 +9,13 @@ import {
 } from "../domain";
 import v1Seed from "../domain/__fixtures__/v1-seed.json";
 import v1Drafts from "../domain/__fixtures__/v1-drafts.json";
+import v2Prefixes from "../domain/__fixtures__/v2-prefixes.json";
 import {
   CORRUPT_BACKUP_KEY,
   LEGACY_CORRUPT_BACKUP_KEY,
   LEGACY_STORAGE_KEY,
+  LEGACY_V2_CORRUPT_BACKUP_KEY,
+  LEGACY_V2_STORAGE_KEY,
   LocalRepository,
   STORAGE_KEY,
   type StorageLike,
@@ -47,9 +50,9 @@ describe("LocalRepository", () => {
     const repo = make(storage);
     await repo.load();
     expect(repo.getStatus().loadIssue).toBe("missing");
-    expect(STORAGE_KEY).toBe("mnemonis.workspace.v2");
-    expect(CORRUPT_BACKUP_KEY).toBe("mnemonis.workspace.v2.corrupt");
-    expect(JSON.parse(storage.getItem(STORAGE_KEY) as string).schemaVersion).toBe(2);
+    expect(STORAGE_KEY).toBe("mnemonis.workspace.v3");
+    expect(CORRUPT_BACKUP_KEY).toBe("mnemonis.workspace.v3.corrupt");
+    expect(JSON.parse(storage.getItem(STORAGE_KEY) as string).schemaVersion).toBe(3);
   });
 
   it("round-trips mutations across instances", async () => {
@@ -82,7 +85,7 @@ describe("LocalRepository", () => {
     s.revisions.r = {
       id: "r",
       memoryId: "ghost",
-      snapshot: { title: "t", content: "", type: "fact", tags: [], collectionId: null, archived: false, metadata: {} },
+      snapshot: { title: "t", content: "", type: "fact", tags: [], collectionId: null, projectId: null, archived: false, metadata: {} },
       parentRevisionId: null,
       createdAt: "t",
       author: "a",
@@ -217,8 +220,8 @@ describe("legacy v1 storage", () => {
     expect(listMemories(s)).toHaveLength(18);
     expect(pendingChanges(s)).toHaveLength(2); // the old experiment line, now Inbox items
     const stored = JSON.parse(storage.getItem(STORAGE_KEY) as string);
-    expect(stored.schemaVersion).toBe(2);
-    expect(stored.state.schemaVersion).toBe(2);
+    expect(stored.schemaVersion).toBe(3);
+    expect(stored.state.schemaVersion).toBe(3);
     expect(Object.keys(stored.state.memories)).toHaveLength(19);
     expect(storage.getItem(LEGACY_STORAGE_KEY)).toBe(raw); // NOT deleted, NOT rewritten
     expect(storage.getItem(CORRUPT_BACKUP_KEY)).toBeNull();
@@ -306,7 +309,7 @@ describe("storage recovery", () => {
     expect(storage.getItem(CORRUPT_BACKUP_KEY)).toBe("{broken v2");
     expect(storage.getItem(LEGACY_STORAGE_KEY)).toBe(v1);
     expect(storage.getItem(LEGACY_CORRUPT_BACKUP_KEY)).toBeNull();
-    expect(JSON.parse(storage.getItem(STORAGE_KEY) as string).schemaVersion).toBe(2); // repaired
+    expect(JSON.parse(storage.getItem(STORAGE_KEY) as string).schemaVersion).toBe(3); // repaired
   });
 
   it("corrupt v2 + unreadable v1 => both backed up separately, v1 key kept, issue reported", async () => {
@@ -354,5 +357,51 @@ describe("storage recovery", () => {
     expect(ok.value.status).toBe("saved");
     const rej = await repo.addRelation({ fromId: "b", toId: "a", label: "m", provenance: { origin: "process", createdBy: "bot" }, actor: AGENT });
     expect((await repo.rejectRelation({ relationId: rej.value.id, actor: U })).value.status).toBe("rejected");
+  });
+});
+
+describe("legacy v2 storage (no projects)", () => {
+  const v2Envelope = (state: unknown) => JSON.stringify({ schemaVersion: 2, state });
+
+  it("migrates the v2 key on load, persists under v3 (with derived projects) and leaves the v2 key untouched", async () => {
+    const storage = new MemoryStorage();
+    const raw = v2Envelope(v2Prefixes);
+    storage.setItem(LEGACY_V2_STORAGE_KEY, raw);
+    const repo = make(storage);
+    const s = await repo.load();
+    expect(repo.getStatus().loadIssue).toBeNull();
+    expect(Object.keys(s.projects)).toHaveLength(2);
+    expect(Object.keys(s.memories)).toEqual(Object.keys(v2Prefixes.memories));
+    expect(JSON.parse(storage.getItem(STORAGE_KEY) as string).schemaVersion).toBe(3);
+    expect(storage.getItem(LEGACY_V2_STORAGE_KEY)).toBe(raw);
+    storage.setItem(LEGACY_V2_STORAGE_KEY, "changed after migration");
+    expect(Object.keys((await make(storage).load()).projects)).toHaveLength(2);
+  });
+
+  it("an old v2 export file still imports", async () => {
+    const repo = make(new MemoryStorage());
+    await repo.load();
+    const s = await repo.importJson(v2Envelope(v2Prefixes));
+    expect(s.schemaVersion).toBe(3);
+    expect(Object.keys(s.projects)).toHaveLength(2);
+  });
+
+  it("unreadable v2 data is backed up in its own slot, the v1 key is then tried", async () => {
+    const storage = new MemoryStorage();
+    storage.setItem(LEGACY_V2_STORAGE_KEY, "{broken");
+    storage.setItem(LEGACY_STORAGE_KEY, JSON.stringify({ schemaVersion: 1, state: v1Seed }));
+    const repo = make(storage);
+    const s = await repo.load();
+    expect(listMemories(s)).toHaveLength(18);
+    expect(storage.getItem(LEGACY_V2_CORRUPT_BACKUP_KEY)).toBe("{broken");
+    expect(storage.getItem(LEGACY_V2_STORAGE_KEY)).toBe("{broken");
+  });
+
+  it("only unreadable v2 data reports corrupt and starts fresh", async () => {
+    const storage = new MemoryStorage();
+    storage.setItem(LEGACY_V2_STORAGE_KEY, v2Envelope({ foo: 1 }));
+    const repo = make(storage);
+    expect(listMemories(await repo.load())).toEqual([]);
+    expect(repo.getStatus().loadIssue).toBe("corrupt");
   });
 });

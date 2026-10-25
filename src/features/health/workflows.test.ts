@@ -12,6 +12,7 @@ function mem(id: string, p: Partial<Memory> = {}): Memory {
     type: "fact",
     tags: ["t"],
     collectionId: "col1",
+    projectId: null,
     archived: false,
     metadata: {},
     createdAt: "2026-05-30T00:00:00.000Z",

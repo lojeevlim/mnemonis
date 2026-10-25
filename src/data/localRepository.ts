@@ -31,6 +31,9 @@ import type { LoadIssue, MemoryRepository, RepositoryStatus } from "./repository
 
 export const STORAGE_KEY = `mnemonis.workspace.v${SCHEMA_VERSION}`;
 export const CORRUPT_BACKUP_KEY = `${STORAGE_KEY}.corrupt`;
+/** Previous (v2, no projects) storage key. Read once for migration; NEVER deleted or rewritten by the app on load. */
+export const LEGACY_V2_STORAGE_KEY = "mnemonis.workspace.v2";
+export const LEGACY_V2_CORRUPT_BACKUP_KEY = `${LEGACY_V2_STORAGE_KEY}.corrupt`;
 /** Pre-refactor (branches / commits) storage key. Read once for migration; NEVER deleted by the app on load. */
 export const LEGACY_STORAGE_KEY = "mnemonis.workspace.v1";
 /** Separate backup slot for an unreadable legacy v1 payload (the v1 key itself is never modified). */
@@ -217,37 +220,46 @@ export class LocalRepository implements MemoryRepository {
   }
 
   /**
-   * Look for the legacy v1 envelope, migrate it and persist it under the v2 key. The v1 key is left
-   * untouched (it is the user's only copy of their old data, and a rollback path). `fallbackIssue` is
-   * reported when nothing usable is found ("missing" when v2 was absent, else why v2 was unreadable).
+   * Look for an older envelope (v2 key, then the v1 key), migrate it and persist it under the current key.
+   * The old keys are left untouched (the user's only copy of their old data, and a rollback path).
+   * `fallbackIssue` is reported when nothing usable is found ("missing" when the current key was absent, else
+   * why it was unreadable).
    */
   private readLegacy(
     storage: StorageLike,
     fallbackIssue: LoadIssue,
   ): { state: WorkspaceState | null; issue: LoadIssue | null } {
-    let legacy: string | null;
-    try {
-      legacy = storage.getItem(LEGACY_STORAGE_KEY);
-    } catch {
-      return { state: null, issue: fallbackIssue };
-    }
-    if (legacy === null) return { state: null, issue: fallbackIssue };
-    let issue: LoadIssue = "corrupt";
-    try {
-      const parsed = JSON.parse(legacy) as Partial<Envelope> | null;
-      const v = migrateWorkspaceState(parsed?.state);
-      if (v.ok && parsed?.schemaVersion === 1) {
-        this.state = v.state;
-        this.persist();
-        return { state: v.state, issue: null };
+    let firstIssue: LoadIssue | null = null;
+    const sources: [string, number, string][] = [
+      [LEGACY_V2_STORAGE_KEY, 2, LEGACY_V2_CORRUPT_BACKUP_KEY],
+      [LEGACY_STORAGE_KEY, 1, LEGACY_CORRUPT_BACKUP_KEY],
+    ];
+    for (const [key, version, backupKey] of sources) {
+      let legacy: string | null;
+      try {
+        legacy = storage.getItem(key);
+      } catch {
+        return { state: null, issue: fallbackIssue };
       }
-      issue = v.ok ? "corrupt" : v.reason;
-    } catch {
-      /* unreadable legacy data: fall through */
+      if (legacy === null) continue;
+      let issue: LoadIssue = "corrupt";
+      try {
+        const parsed = JSON.parse(legacy) as Partial<Envelope> | null;
+        const v = migrateWorkspaceState(parsed?.state);
+        if (v.ok && parsed?.schemaVersion === version) {
+          this.state = v.state;
+          this.persist();
+          return { state: v.state, issue: null };
+        }
+        issue = v.ok ? "corrupt" : v.reason;
+      } catch {
+        /* unreadable legacy data: fall through */
+      }
+      // Keep a copy in its own slot (the legacy key itself is never touched), then try the next / start fresh.
+      this.backupCorrupt(storage, backupKey, legacy);
+      firstIssue ??= issue;
     }
-    // Keep a copy in its own slot (the v1 key itself is never touched), then start fresh.
-    this.backupCorrupt(storage, LEGACY_CORRUPT_BACKUP_KEY, legacy);
-    return { state: null, issue: fallbackIssue === "missing" ? issue : fallbackIssue };
+    return { state: null, issue: fallbackIssue === "missing" ? (firstIssue ?? fallbackIssue) : fallbackIssue };
   }
 
   /**

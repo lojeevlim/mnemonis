@@ -1,3 +1,4 @@
+import { deriveProjectsFromPrefixes } from "./projects";
 import { SCHEMA_VERSION, validateWorkspaceState, type ValidationResult } from "./state";
 import type { MemorySnapshot, Revision } from "./types";
 import { deepEqual, isPlainObject, isReservedKey } from "./util";
@@ -166,7 +167,7 @@ function migrateV1(raw: Rec): unknown {
   const revisions: Record<string, Revision> = {};
   for (const r of [...saved, ...others]) revisions[r.id] = r;
   const out: Record<string, unknown> = {
-    schemaVersion: SCHEMA_VERSION,
+    schemaVersion: 2,
     memories: { ...memories },
     revisions,
     relations: Object.fromEntries(
@@ -211,21 +212,49 @@ function nearestSaved(draft: Rec, all: Rec, savedIds: Set<string>): string | nul
 }
 
 /**
- * Accepts persisted / imported workspace data of any known schema and returns a STRICTLY validated v2 state.
- * v2 is validated as is; v1 is migrated (see migrateV1). Anything else is `version-mismatch` / `corrupt`.
- * Never throws.
+ * v2 -> v3, pure and deterministic. The input is UNTRUSTED and the output is validated strictly:
+ *  1. every snapshot gets `projectId: null` as a normalisation default (no new revisions, history otherwise intact);
+ *  2. `projects` is added and filled from the title prefixes (see deriveProjectsFromPrefixes), linking the
+ *     same-named collections. Nothing else changes: no collection is created, ids / relations / pending
+ *     proposals stay as they are.
+ */
+function migrateV2(raw: Rec): ValidationResult {
+  const revisions = isPlainObject(raw.revisions)
+    ? Object.fromEntries(
+        Object.entries(raw.revisions).map(([k, r]) => [
+          k,
+          isPlainObject(r) && isPlainObject(r.snapshot) && !Object.hasOwn(r.snapshot, "projectId")
+            ? { ...r, snapshot: { ...r.snapshot, projectId: null } }
+            : r,
+        ]),
+      )
+    : raw.revisions;
+  const checked = validateWorkspaceState({ ...raw, schemaVersion: SCHEMA_VERSION, revisions, projects: raw.projects ?? {} });
+  if (!checked.ok) return checked;
+  return validateWorkspaceState(deriveProjectsFromPrefixes(checked.state));
+}
+
+/**
+ * Accepts persisted / imported workspace data of any known schema and returns a STRICTLY validated v3 state.
+ * v3 is validated as is; v2 is upgraded (see migrateV2); v1 is migrated to v2 (see migrateV1) and then upgraded.
+ * Anything else is `version-mismatch` / `corrupt`. Never throws. Idempotent: migrating a result changes nothing.
  */
 export function migrateWorkspaceState(raw: unknown): ValidationResult {
   if (!isPlainObject(raw)) return CORRUPT;
   if (raw.schemaVersion === SCHEMA_VERSION) return validateWorkspaceState(raw);
-  if (raw.schemaVersion === 1) {
-    let migrated: unknown;
+  if (raw.schemaVersion === 2) {
     try {
-      migrated = migrateV1(raw);
+      return migrateV2(raw);
     } catch {
       return CORRUPT;
     }
-    return validateWorkspaceState(migrated);
+  }
+  if (raw.schemaVersion === 1) {
+    try {
+      return migrateV2(migrateV1(raw) as Rec);
+    } catch {
+      return CORRUPT;
+    }
   }
   return { ok: false, reason: typeof raw.schemaVersion === "number" ? "version-mismatch" : "corrupt" };
 }

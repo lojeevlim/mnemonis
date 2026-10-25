@@ -12,7 +12,8 @@ import type {
   WorkspaceState,
 } from "./types";
 import { assertActor, assertIdentityLimits, assertWithinLimits } from "./limits";
-import { assertNotBothCollectionFields, resolveCollection } from "./collectionDefault";
+import { assertNotBothCollectionFields } from "./collectionDefault";
+import { assertNotBothProjectFields, confirmProjectIn, getProject, resolvePlacement, type ProjectInput } from "./projects";
 import { autoRelate } from "./titlePrefix";
 import { autoRelateTopics } from "./topicLinks";
 import { describeChange } from "./versioning";
@@ -29,6 +30,10 @@ export interface CreateMemoryInput {
   collectionId?: string | null;
   /** An existing collection id or name (agents may only name existing ones; users may create). */
   collection?: string;
+  /** undefined = automatic (collection-linked project, else title-prefix project, else none); null = no project. */
+  projectId?: string | null;
+  /** Reuse or create a project by name (and optional repo / workspace). Mutually exclusive with `projectId`. */
+  project?: ProjectInput;
   source?: string;
   provenance?: MemoryProvenance;
   metadata?: Metadata;
@@ -36,11 +41,19 @@ export interface CreateMemoryInput {
 }
 
 export type MemoryPatch = Partial<
-  Pick<MemorySnapshot, "title" | "content" | "type" | "tags" | "collectionId" | "metadata">
+  Pick<MemorySnapshot, "title" | "content" | "type" | "tags" | "collectionId" | "projectId" | "metadata">
 > & {
+  /** Reuse or create a project by name (and optional repo / workspace); mutually exclusive with `projectId`. Never re-defaulted on update. */
+  project?: ProjectInput;
   /** An existing collection id or name; ignored when `collectionId` is given. Never re-defaulted on update. */
   collection?: string;
 };
+
+export function checkProject(state: WorkspaceState, projectId: string | null): void {
+  if (projectId !== null && !safeGet(state.projects, projectId)) {
+    throw new DomainError("project_not_found", `Project not found: ${projectId}`);
+  }
+}
 
 export function checkCollection(state: WorkspaceState, collectionId: string | null): void {
   if (collectionId !== null && !safeGet(state.collections, collectionId)) {
@@ -112,7 +125,9 @@ export function appendRevision(
     decidedAt: isUser ? now : null,
   };
   revisions[rev.id] = rev;
-  return { state: { ...state, revisions }, value: rev };
+  // A user saving a memory that sits in an unconfirmed (agent-created) project acknowledges that project.
+  const base2: WorkspaceState = { ...state, revisions };
+  return { state: isUser ? confirmProjectIn(base2, p.snapshot.projectId) : base2, value: rev };
 }
 
 const view = (state: WorkspaceState, id: string): Memory => getMemory(state, id) as Memory;
@@ -125,16 +140,20 @@ export function createMemory(
   assertActor(input.actor);
   const title = requireText(input.title, "title");
   const po = input.provenance?.origin;
-  const resolved = resolveCollection(state, ctx, {
+  const placed = resolvePlacement(state, ctx, {
+    projectId: input.projectId,
+    project: input.project,
     collectionId: input.collectionId,
     collection: input.collection,
     title,
     actor: input.actor,
     origin: po === "import" || po === "system" ? po : input.actor.kind,
   });
-  state = resolved.state;
-  const collectionId = resolved.collectionId;
+  state = placed.state;
+  const collectionId = placed.collectionId ?? null;
+  const projectId = placed.projectId ?? null;
   checkCollection(state, collectionId);
+  checkProject(state, projectId);
   const id = input.id ?? freshId(ctx, "mem", (x) => Object.hasOwn(state.memories, x));
   assertSafeId(id, "memory");
   if (safeGet(state.memories, id)) throw new DomainError("duplicate_id", `Memory id already exists: ${id}`);
@@ -151,13 +170,14 @@ export function createMemory(
     type: requireText(input.type ?? "fact", "type"),
     tags: normalizeTags(input.tags),
     collectionId,
+    projectId,
     archived: false,
     metadata: cloneJson(input.metadata ?? {}),
   };
   assertIdentityLimits(identity);
   const withIdentity: WorkspaceState = { ...state, memories: { ...state.memories, [id]: identity } };
   const { state: appended } = appendRevision(withIdentity, ctx, { memoryId: id, snapshot, actor: input.actor });
-  const next = autoRelateTopics(autoRelate(appended, ctx, input.actor, id), ctx, input.actor, id);
+  const next = autoRelateTopics(autoRelate(appended, ctx, input.actor, id, { onlyDrop: projectId !== null }), ctx, input.actor, id);
   return { state: next, value: view(next, id) };
 }
 
@@ -171,15 +191,23 @@ export function updateMemory(
   if (before.archived) throw new DomainError("memory_archived", "Restore the memory before editing it");
   let { patch } = args;
   assertNotBothCollectionFields(patch.collectionId, patch.collection);
-  if (patch.collection !== undefined && patch.collectionId === undefined) {
-    const r = resolveCollection(state, ctx, {
+  assertNotBothProjectFields(patch.projectId, patch.project);
+  if (patch.collection !== undefined || patch.project !== undefined || patch.projectId !== undefined || patch.collectionId !== undefined) {
+    // Only explicit input changes the project / folder; a named project brings the memory to its folder unless a
+    // collection was named too.
+    const r = resolvePlacement(state, ctx, {
+      projectId: patch.projectId,
+      project: patch.project,
+      collectionId: patch.collectionId,
       collection: patch.collection,
-      title: before.title,
+      title: patch.title !== undefined ? requireText(patch.title, "title") : before.title,
       actor: args.actor,
       applyDefault: false,
     });
     state = r.state;
-    patch = { ...patch, collectionId: r.collectionId };
+    patch = { ...patch, collectionId: r.collectionId, projectId: r.projectId };
+    delete patch.collection;
+    delete patch.project;
   }
   const snapshot: MemorySnapshot = {
     ...before,
@@ -188,13 +216,15 @@ export function updateMemory(
     ...(patch.type !== undefined && { type: requireText(patch.type, "type") }),
     ...(patch.tags !== undefined && { tags: normalizeTags(patch.tags) }),
     ...(patch.collectionId !== undefined && { collectionId: patch.collectionId }),
+    ...(patch.projectId !== undefined && { projectId: patch.projectId }),
     ...(patch.metadata !== undefined && { metadata: cloneJson(patch.metadata) }),
   };
   checkCollection(state, snapshot.collectionId);
+  checkProject(state, snapshot.projectId);
   const { state: appended } = appendRevision(state, ctx, { memoryId: args.id, snapshot, actor: args.actor });
   const titleChanged = snapshot.title !== before.title;
   const tagsChanged = !deepEqual(snapshot.tags, before.tags);
-  let next = titleChanged ? autoRelate(appended, ctx, args.actor, args.id) : appended;
+  let next = titleChanged ? autoRelate(appended, ctx, args.actor, args.id, { onlyDrop: snapshot.projectId !== null }) : appended;
   if (titleChanged || tagsChanged) next = autoRelateTopics(next, ctx, args.actor, args.id);
   return { state: next, value: view(next, args.id) };
 }
@@ -248,6 +278,7 @@ export function rollbackMemory(
   if (snapshot.collectionId !== null && !safeGet(state.collections, snapshot.collectionId)) {
     snapshot.collectionId = null;
   }
+  if (snapshot.projectId !== null && !getProject(state, snapshot.projectId)) snapshot.projectId = null;
   const { state: next } = appendRevision(state, ctx, {
     memoryId: args.memoryId,
     snapshot,

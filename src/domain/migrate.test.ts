@@ -18,7 +18,7 @@ function migrate(raw: unknown): WorkspaceState {
 
 /** Everything v1 held must still be there. */
 function expectPreserved(raw: any, s: WorkspaceState) {
-  expect(s.schemaVersion).toBe(2);
+  expect(s.schemaVersion).toBe(3);
   expect(s.memories).toEqual(raw.memories);
   // every v1 relation becomes a saved v2 relation (nothing else changes)
   expect(s.relations).toEqual(
@@ -26,10 +26,17 @@ function expectPreserved(raw: any, s: WorkspaceState) {
       Object.entries<any>(raw.relations).map(([k, r]) => [k, { ...r, status: "saved", decidedAt: r.createdAt }]),
     ),
   );
-  expect(s.collections).toEqual(raw.collections);
+  // collections are unchanged apart from the projectId link to a same-named derived project (none are created)
+  expect(Object.keys(s.collections).sort()).toEqual(Object.keys(raw.collections).sort());
+  for (const [id, c] of Object.entries<any>(raw.collections)) {
+    const { projectId, ...rest } = s.collections[id];
+    expect(rest).toEqual(c);
+    if (projectId) expect(s.projects[projectId].collectionId).toBe(id);
+  }
   expect(Object.keys(s.revisions).sort()).toEqual(Object.keys(raw.revisions).sort());
   for (const [id, r] of Object.entries<any>(raw.revisions)) {
-    expect(s.revisions[id].snapshot).toEqual(r.snapshot);
+    // v3 only adds the normalisation default projectId: null to a snapshot (no new revision)
+    expect(s.revisions[id].snapshot).toEqual({ ...r.snapshot, projectId: null });
     expect(s.revisions[id].memoryId).toBe(r.memoryId);
     expect(s.revisions[id].createdAt).toBe(r.createdAt);
     expect(s.revisions[id].author).toBe(r.author);

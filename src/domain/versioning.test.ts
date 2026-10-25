@@ -28,6 +28,7 @@ const snap = (over: Partial<MemorySnapshot> = {}): MemorySnapshot => ({
   type: "fact",
   tags: [],
   collectionId: null,
+  projectId: null,
   archived: false,
   metadata: {},
   ...over,

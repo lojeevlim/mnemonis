@@ -336,18 +336,15 @@ export function createProject(
     const existing = findProjectByKey(state, checked.key);
     if (existing && existing.autoCreated && !existing.confirmed) {
       const t = takeOver(state, existing, checked);
-      return { state: autoFileOwnMemories(t.state, ctx, { actor: args.actor }).state, value: t.value };
+      return { state: autoFileOwnMemories(t.state, ctx, { actor: args.actor, projectId: t.value.id }).state, value: t.value };
     }
   }
   const r = insertProject(state, ctx, checked, args.actor);
-  // A new project may be the unique match of memories the user already wrote: they are filed into it.
-  const filed = args.actor.kind === "user" ? autoFileOwnMemories(r.state, ctx, { actor: args.actor }).state : r.state;
+  // A new project name is the one moment memories the user already wrote can start matching: a bounded pass files
+  // their never-edited ones into it (see autoFileOwnMemories; it never fails the creation).
+  const filed = args.actor.kind === "user" ? autoFileOwnMemories(r.state, ctx, { actor: args.actor, projectId: r.project.id }).state : r.state;
   return { state: filed, value: r.project };
 }
-
-/** Files the user's own memories into the (now) matching project; a no-op without a context. */
-const fileOwn = (state: WorkspaceState, ctx: DomainContext | undefined, actor: Actor): WorkspaceState =>
-  ctx ? autoFileOwnMemories(state, ctx, { actor }).state : state;
 
 /** Confirms `p` (adopting a same-named folder when it has none) and adds the repo / workspace the user supplied. */
 function takeOver(state: WorkspaceState, p: Project, c: CheckedInput): Mutation<Project> {
@@ -366,14 +363,19 @@ function requireUser(actor: Actor): void {
   if (actor.kind !== "user") throw new DomainError("forbidden", "Only a user can change an existing project");
 }
 
-/** User only, idempotent: marks a project as reviewed (an agent-created project stops counting against the cap). */
-export function confirmProject(state: WorkspaceState, args: { id: string; actor: Actor }, ctx?: DomainContext): Mutation<Project> {
+/**
+ * User only, idempotent: marks a project as reviewed (an agent-created project stops counting against the cap).
+ * It does not move any memory: the Unsorted suggestions for the project stay and are filed by an explicit
+ * fileUnsorted. (`ctx` is accepted for compatibility and unused.)
+ */
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept so callers that pass a context still compile
+export function confirmProject(state: WorkspaceState, args: { id: string; actor: Actor }, _ctx?: DomainContext): Mutation<Project> {
   requireUser(args.actor);
   const p = getProject(state, args.id);
   if (!p) throw new DomainError("project_not_found", `Project not found: ${args.id}`);
-  if (p.confirmed && (collectionOf(state, p) || !adoptableCollection(state, p.key))) return { state: fileOwn(state, ctx, args.actor), value: p };
+  if (p.confirmed && (collectionOf(state, p) || !adoptableCollection(state, p.key))) return { state, value: p };
   const r = confirmAndAdopt(state, p);
-  return { state: fileOwn(r.state, ctx, args.actor), value: r.project };
+  return { state: r.state, value: r.project };
 }
 
 /** The project's own folder: it exists and points back at the project. */
@@ -398,9 +400,11 @@ function confirmAndAdopt(state: WorkspaceState, p: Project): { state: WorkspaceS
 
 /**
  * User only. Renames a project: id and collection link stay, the old key becomes an alias (so lookups by the old
- * name still resolve). The new name must not collide with another project's key or alias.
+ * name still resolve). The new name must not collide with another project's key or alias. Like confirmProject it
+ * moves no memory (the new name shows up as Unsorted suggestions). `ctx` is accepted for compatibility and unused.
  */
-export function renameProject(state: WorkspaceState, args: { id: string; name: string; actor: Actor }, ctx?: DomainContext): Mutation<Project> {
+// eslint-disable-next-line @typescript-eslint/no-unused-vars -- kept so callers that pass a context still compile
+export function renameProject(state: WorkspaceState, args: { id: string; name: string; actor: Actor }, _ctx?: DomainContext): Mutation<Project> {
   requireUser(args.actor);
   const p = getProject(state, args.id);
   if (!p) throw new DomainError("project_not_found", `Project not found: ${args.id}`);
@@ -412,7 +416,7 @@ export function renameProject(state: WorkspaceState, args: { id: string; name: s
   if (key !== p.key && !aliases.includes(p.key)) aliases.push(p.key);
   if (aliases.length > LIMITS.maxProjectAliases) throw tooLarge(`Too many project aliases (max ${LIMITS.maxProjectAliases})`);
   const next: Project = { ...p, name, key, aliases, confirmed: true };
-  return { state: fileOwn({ ...state, projects: { ...state.projects, [p.id]: next } }, ctx, args.actor), value: next };
+  return { state: { ...state, projects: { ...state.projects, [p.id]: next } }, value: next };
 }
 
 /** Confirms `projectId` (if it exists and is unconfirmed); returns the same state otherwise. Used when a user saves / approves. */
@@ -650,6 +654,11 @@ export function resolvePlacement(state: WorkspaceState, ctx: DomainContext, inpu
 
 // ---- migration: derive projects from title prefixes ---------------------------------------------------------------
 
+/** A derived project needs at least this many memories (parent + children + followers). */
+const MIN_DERIVED_MEMBERS = 2;
+/** At most this many projects are derived by one migration (the busiest keys). */
+export const MAX_DERIVED_PROJECTS = 100;
+
 const collapse = (s: string): string => s.trim().replace(/\s+/g, " ");
 
 /** Most common raw casing; ties go to the variant with uppercase letters, then alphabetical (as the graph does). */
@@ -725,25 +734,32 @@ export function deriveProjectsFromPrefixes(state: WorkspaceState): WorkspaceStat
     const qualifies = parents.length > 0 ? children.length + followers.length > 0 : !key.includes("/") && children.length > 0;
     if (!qualifies || taken.has(key) || RESERVED_PROJECT_NAMES.has(key)) continue;
     const members = [...parents, ...children, ...followers];
+    // A prefix with a single memory (one child, nothing else) is just a title, not a project.
+    if (members.length < MIN_DERIVED_MEMBERS) continue;
     const name = displayName([...children, ...followers].map((c) => c.raw).concat(parents.map((p) => collapse(p.title))));
     if (name.length > LIMITS.projectName || CONTROL_CHARS.test(name) || FORMAT_CHARS.test(name) || name !== name.normalize("NFC")) continue;
     if (normalizeTitle(name) !== key) continue;
     found.push({ key, name, size: members.length, createdAt: members.map((m) => m.createdAt).sort()[0] });
   }
-  // Keep the busiest keys when more than the cap qualify (deterministic: size desc, then key).
-  const room = Math.max(0, LIMITS.maxProjects - projectList(state).length);
+  // Keep the busiest keys when more than the cap qualify (deterministic: size desc, then key). The migration stops
+  // at MAX_DERIVED_PROJECTS so the user keeps room (LIMITS.maxProjects) to create their own.
+  const room = Math.max(0, Math.min(MAX_DERIVED_PROJECTS, LIMITS.maxProjects - projectList(state).length));
   const chosen = found.sort((a, b) => b.size - a.size || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0)).slice(0, room);
   if (chosen.length === 0) return state;
 
   const projects = { ...state.projects };
   const collections = { ...state.collections };
-  const oldestCollections = Object.values(state.collections).sort((a, b) =>
-    a.createdAt === b.createdAt ? (a.id < b.id ? -1 : a.id > b.id ? 1 : 0) : a.createdAt < b.createdAt ? -1 : 1,
-  );
+  // key -> oldest unlinked collection of that name, built once (not one scan of all collections per project).
+  const oldestByKey = new Map<string, Collection>();
+  for (const x of Object.values(state.collections).sort(oldestCollectionFirst)) {
+    if ((x.projectId ?? null) !== null) continue;
+    const k = normalizeTitle(x.name);
+    if (!oldestByKey.has(k)) oldestByKey.set(k, x);
+  }
   for (const c of chosen) {
     let id = projectIdForKey(c.key);
     while (Object.hasOwn(projects, id)) id = projectIdForKey(`${c.key}\u0000${id}`);
-    const col = oldestCollections.find((x) => normalizeTitle(x.name) === c.key && (collections[x.id].projectId ?? null) === null);
+    const col = oldestByKey.get(c.key);
     if (col) collections[col.id] = { ...collections[col.id], projectId: id };
     projects[id] = {
       id,

@@ -164,13 +164,17 @@ describe("auto-filing the user's own memories", () => {
     expect(autoFileOwnMemories(p.state, ctx, { actor: AGENT }).value).toEqual([]);
   });
 
-  it("confirmProject and renameProject (with a context) file newly matching own memories", () => {
+  it("confirmProject and renameProject move nothing (only createProject auto-files); the suggestion stays for an explicit file", () => {
     const { ctx, state } = setup();
-    const made = createProject(state, ctx, { name: "Acme", actor: AGENT });
+    const made = createProject(state, ctx, { name: "Acme", actor: USER });
     const own = createMemory(made.state, ctx, { title: "Plain", actor: USER });
-    // A memory the user retitled to match nothing yet; then the project gets a new name that matches it.
+    // The project gets a new name that matches the memory: the rename does not rewrite the memory...
     const renamed = renameProject(own.state, { id: made.value.id, name: "Plain", actor: USER }, ctx);
-    expect(getMemory(renamed.state, own.value.id)!.projectId).toBe(made.value.id);
+    expect(getMemory(renamed.state, own.value.id)!.projectId).toBeNull();
+    expect(memoryHistory(renamed.state, own.value.id)).toHaveLength(1);
+    // ...but it is still suggested, and the explicit action files it.
+    expect(suggestReassignments(renamed.state).map((x) => x.memoryId)).toEqual([own.value.id]);
+    expect(applyReassignments(renamed.state, ctx, { actor: USER }).value).toHaveLength(1);
     const m2 = createMemory(renamed.state, ctx, { title: "Acme: old name", actor: USER });
     expect(getMemory(m2.state, m2.value.id)!.projectId).toBe(made.value.id); // alias resolves on create
   });

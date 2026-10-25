@@ -1,4 +1,6 @@
 import { LIMITS } from "./limits";
+import { RESERVED_PROJECT_NAMES } from "./projects";
+import { normalizeTitle } from "./titlePrefix";
 import { ORIGINS, PROJECT_SOURCE_KINDS, RELATION_STATUSES, REVISION_STATUSES, type Relation, type WorkspaceState } from "./types";
 import { isJsonValue, isPlainObject, isReservedKey } from "./util";
 
@@ -142,20 +144,6 @@ function validate(raw: Rec): Record<string, Relation> | null {
       if (!isPlainObject(s) || !isStr(s.ref) || !isStr(s.kind) || !(PROJECT_SOURCE_KINDS as readonly string[]).includes(s.kind)) return null;
     }
   }
-  // A project and its folder, when both exist and both name a link, must name each other (a dangling id is
-  // tolerated: the other side may have been deleted).
-  const colMap = raw.collections as Rec;
-  const projMap = raw.projects as Rec;
-  for (const [id, pr] of projects) {
-    if (pr.collectionId === null || !has(colMap, pr.collectionId)) continue;
-    const c = colMap[pr.collectionId as string] as Rec;
-    if (c.projectId !== undefined && c.projectId !== null && c.projectId !== id) return null;
-  }
-  for (const [id, c] of collections) {
-    if (!isStr(c.projectId) || !has(projMap, c.projectId)) continue;
-    const pr = projMap[c.projectId] as Rec;
-    if (pr.collectionId !== null && pr.collectionId !== id) return null;
-  }
   for (const [, r] of relations) {
     const p = r.provenance;
     if (!has(memMap, r.fromId) || !has(memMap, r.toId) || !isStr(r.label) || !isStr(r.createdAt)) return null;
@@ -217,7 +205,147 @@ export function validateWorkspaceState(raw: unknown): ValidationResult {
     return CORRUPT;
   }
   if (!relations) return CORRUPT;
-  return { ok: true, state: { ...(raw as unknown as WorkspaceState), relations } };
+  return { ok: true, state: repairProjects({ ...(raw as unknown as WorkspaceState), relations }) };
+}
+
+// ---- repair of project data on load ---------------------------------------------------------------------------------
+
+// eslint-disable-next-line no-control-regex
+const CONTROL_RUN = /[\u0000-\u001f\u007f-\u009f]+/g;
+const FORMAT_RUN = /\p{Cf}+/gu;
+const HAS_FORMAT = /\p{Cf}/u;
+// eslint-disable-next-line no-control-regex
+const HAS_CONTROL = /[\u0000-\u001f\u007f-\u009f]/;
+const WORKSPACE_REF = /^[A-Za-z0-9_-]{1,64}$/;
+const byAge = (a: Rec, b: Rec): number =>
+  a.createdAt === b.createdAt ? (a.id! < b.id! ? -1 : 1) : (a.createdAt as string) < (b.createdAt as string) ? -1 : 1;
+const sameList = (a: unknown[], b: unknown[]): boolean => a.length === b.length && a.every((x, i) => x === b[i]);
+
+/** A name the project rules accept (<= 100 chars, NFC, no control / format characters, not reserved), or "" when nothing is left. */
+function cleanProjectName(raw: string): string {
+  const name = raw.slice(0, 1000).replace(FORMAT_RUN, "").replace(CONTROL_RUN, " ").normalize("NFC").trim().replace(/\s+/g, " ").slice(0, LIMITS.projectName).trim();
+  return RESERVED_PROJECT_NAMES.has(normalizeTitle(name)) ? "" : name;
+}
+
+const validAlias = (a: string): boolean =>
+  a !== "" && a.length <= LIMITS.projectName && a === normalizeTitle(a) && a === a.normalize("NFC") && !HAS_FORMAT.test(a) && !HAS_CONTROL.test(a) && !RESERVED_PROJECT_NAMES.has(a);
+const validSource = (s: Rec): boolean => {
+  const ref = s.ref as string;
+  if (ref === "" || ref.length > LIMITS.repoUrl) return false;
+  if (ref !== ref.normalize("NFC") || HAS_CONTROL.test(ref) || HAS_FORMAT.test(ref)) return false;
+  return s.kind === "workspace" ? WORKSPACE_REF.test(ref) : ref.length <= LIMITS.repoUrl;
+};
+
+/**
+ * Pure and idempotent repair of what loading must never reject: project <-> folder links, keys and references.
+ * Type / size / shape errors are NOT repaired here (the validator rejects those); memories, revisions and relations
+ * are never touched. Deterministic, oldest project first:
+ *  - a project's name loses control / format characters, is NFC and at most 100 characters, and its key becomes
+ *    normalizeTitle(name) (a name that is empty or reserved after cleaning becomes "Project <id suffix>");
+ *  - a later project whose key is taken gets a free "<name> (n)" name (dropped only when none is free within 50 tries);
+ *    an alias that is not a clean normalised key, repeats, or is another project's key / alias is dropped;
+ *    a source whose ref is too long, not NFC, has control / format characters, is duplicated or (workspace) is not an
+ *    opaque id is dropped;
+ *  - links: a dangling project.collectionId / collection.projectId is cleared; a collection pointed at by several
+ *    projects stays with the project it names (else the oldest) and the others lose the pointer; a project named by
+ *    several collections keeps the one it points at (else the oldest) and the others lose the pointer. Both objects
+ *    are always kept; one-sided links (only one side names the other) are tolerated as before.
+ * Returns the same state object when there is nothing to repair.
+ */
+export function repairProjects(state: WorkspaceState): WorkspaceState {
+  const projs = new Map<string, Rec>(Object.entries(state.projects).map(([id, p]) => [id, { ...(p as unknown as Rec) }]));
+  const cols = new Map<string, Rec>(Object.entries(state.collections).map(([id, c]) => [id, { ...(c as unknown as Rec) }]));
+  let dirty = false;
+  const set = (o: Rec, k: string, v: unknown): void => {
+    if (o[k] !== v) {
+      o[k] = v;
+      dirty = true;
+    }
+  };
+  const order = [...projs.values()].sort(byAge);
+
+  // 1. names, keys, sources
+  for (const p of order) {
+    const name = cleanProjectName(p.name as string) || `Project ${(p.id as string).replace(/[^A-Za-z0-9]/g, "").slice(-8) || "x"}`;
+    set(p, "name", name);
+    set(p, "key", normalizeTitle(name));
+    const seen = new Set<string>();
+    const sources = (p.sources as Rec[]).filter((s) => {
+      const id = `${s.kind as string}\u0000${s.ref as string}`;
+      if (!validSource(s) || seen.has(id)) return false;
+      seen.add(id);
+      return true;
+    });
+    if (!sameList(sources, p.sources as Rec[])) set(p, "sources", sources);
+  }
+
+  // 2. unique keys: the oldest keeps the key, a later one is renamed (or dropped when nothing is free)
+  const keys = new Set<string>();
+  for (const p of order) {
+    if (keys.has(p.key as string)) {
+      let free: string | null = null;
+      for (let n = 2; n < 52 && free === null; n++) {
+        const suffix = ` (${n})`;
+        const candidate = `${(p.name as string).slice(0, LIMITS.projectName - suffix.length).trimEnd()}${suffix}`;
+        if (!keys.has(normalizeTitle(candidate))) free = candidate;
+      }
+      if (free === null) {
+        projs.delete(p.id as string);
+        dirty = true;
+        continue;
+      }
+      set(p, "name", free);
+      set(p, "key", normalizeTitle(free));
+    }
+    keys.add(p.key as string);
+  }
+
+  // 3. aliases (after every key is known): clean, unique, never a key of any project
+  const aliasOwner = new Set<string>();
+  for (const p of order) {
+    if (!projs.has(p.id as string)) continue;
+    const aliases = (p.aliases as string[]).filter((a) => {
+      if (!validAlias(a) || a === p.key || keys.has(a) || aliasOwner.has(a)) return false;
+      aliasOwner.add(a);
+      return true;
+    });
+    if (!sameList(aliases, p.aliases as string[])) set(p, "aliases", aliases);
+  }
+
+  // 4. links
+  for (const p of projs.values()) if (p.collectionId !== null && !cols.has(p.collectionId as string)) set(p, "collectionId", null);
+  for (const c of cols.values()) if (typeof c.projectId === "string" && !projs.has(c.projectId)) set(c, "projectId", null);
+  const pointing = new Map<string, Rec[]>();
+  for (const p of order) {
+    if (!projs.has(p.id as string) || p.collectionId === null) continue;
+    const list = pointing.get(p.collectionId as string);
+    if (list) list.push(p);
+    else pointing.set(p.collectionId as string, [p]);
+  }
+  for (const [cid, list] of pointing) {
+    const named = (cols.get(cid) as Rec).projectId;
+    const owner = typeof named === "string" ? named : (list[0].id as string);
+    for (const p of list) if (p.id !== owner) set(p, "collectionId", null);
+  }
+  const named = new Map<string, Rec[]>();
+  for (const c of [...cols.values()].sort(byAge)) {
+    if (typeof c.projectId !== "string") continue;
+    const list = named.get(c.projectId);
+    if (list) list.push(c);
+    else named.set(c.projectId, [c]);
+  }
+  for (const [pid, list] of named) {
+    const own = (projs.get(pid) as Rec).collectionId;
+    const keep = own === null ? list[0].id : own;
+    for (const c of list) if (c.id !== keep) set(c, "projectId", null);
+  }
+
+  if (!dirty) return state;
+  return {
+    ...state,
+    projects: Object.fromEntries(projs) as unknown as WorkspaceState["projects"],
+    collections: Object.fromEntries(cols) as unknown as WorkspaceState["collections"],
+  };
 }
 
 /**

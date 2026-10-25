@@ -35,7 +35,8 @@ interface Info {
 }
 
 const infoOf = (snap: { title: string; tags: string[]; archived: boolean }, demo: boolean): Info => {
-  const p = parseTitlePrefix(snap.title);
+  // A title longer than LIMITS.title (hostile / corrupt import) never makes a project key: it is not normalised.
+  const p = snap.title.length > LIMITS.title ? null : parseTitlePrefix(snap.title);
   return {
     project: p === null ? null : normalizeTitle(p),
     topics: [...new Set(snap.tags.map(topicKey).filter((t) => t !== ""))],

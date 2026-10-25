@@ -2,6 +2,11 @@
 export interface DomainContext {
   now(): string;
   newId(prefix: string): string;
+  /**
+   * Size cap (bytes of serialized workspace JSON) of the store this state is written to, when known. Only used so
+   * that optional housekeeping (automatic filing into projects) can stay clear of it; absent = DEFAULT_WORKSPACE_QUOTA_BYTES.
+   */
+  workspaceQuotaBytes?: number;
 }
 
 export class DomainError extends Error {

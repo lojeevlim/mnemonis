@@ -1,4 +1,5 @@
 import { DomainError, type DomainContext } from "./context";
+import { LIMITS } from "./limits";
 import { listMemories, pendingRevisionMap } from "./queries";
 import { addRelation, rejectRelationsIn, relationValues, removeRelation } from "./relations";
 import type { Actor, WorkspaceState } from "./types";
@@ -71,7 +72,8 @@ export function autoRelate(
     }
   };
 
-  const others = listMemories(state, { includePending: true }).filter((m) => m.id !== memoryId && !m.archived);
+  // A title longer than LIMITS.title (hostile / corrupt import) can never name a project: it is never normalised here.
+  const others = listMemories(state, { includePending: true }).filter((m) => m.id !== memoryId && !m.archived && m.title.length <= LIMITS.title);
   const title = titleOf(memoryId);
   if (title === undefined) return next;
 

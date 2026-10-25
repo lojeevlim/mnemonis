@@ -394,21 +394,39 @@ describe("project names and imported projects (F6)", () => {
     expect(validateWorkspaceState({ ...ok, projects: { [id]: { ...ok.projects[id], sources: [{ kind: "nope", ref: "x" }] } } }).ok).toBe(false);
   });
 
-  it("collection and project links must reference each other when both are set; dangling ids are tolerated", () => {
+  it("project / collection link mismatches are repaired on load (both objects kept), never rejected", () => {
     const ok = base();
     const id = Object.keys(ok.projects)[0];
     const cid = ok.projects[id].collectionId as string;
     const withCol = (c: any, p: any = {}) => ({ ...ok, collections: { ...ok.collections, [cid]: { ...ok.collections[cid], ...c } }, projects: { [id]: { ...ok.projects[id], ...p } } });
-    expect(validateWorkspaceState(withCol({ projectId: "prj_other" })).ok).toBe(false);
-    expect(validateWorkspaceState(withCol({ projectId: null }, { collectionId: "col_other" })).ok).toBe(true); // dangling project side
-    expect(validateWorkspaceState(withCol({}, { collectionId: "col_other" })).ok).toBe(false); // both set, not mutual
-    expect(validateWorkspaceState(withCol({ projectId: "prj_gone" }, { collectionId: null })).ok).toBe(true); // dangling collection side
-    expect(validateWorkspaceState(withCol({ projectId: null })).ok).toBe(true); // one-sided
+    const load = (raw: any) => {
+      const v = validateWorkspaceState(raw);
+      expect(v.ok).toBe(true);
+      return (v as any).state;
+    };
+    // (was rejected) the collection names another, missing project: the dangling pointer is cleared, the project keeps its folder
+    let s = load(withCol({ projectId: "prj_other" }));
+    expect(s.collections[cid].projectId).toBeNull();
+    expect(s.projects[id].collectionId).toBe(cid);
+    // dangling project side: cleared
+    s = load(withCol({ projectId: null }, { collectionId: "col_other" }));
+    expect(s.projects[id].collectionId).toBeNull();
+    expect(s.collections[cid]).toBeDefined();
+    // (was rejected) dangling collection side and project folder pointing nowhere
+    s = load(withCol({ projectId: "prj_gone" }, { collectionId: null }));
+    expect(s.collections[cid].projectId).toBeNull();
+    // one-sided stays as it is
+    s = load(withCol({ projectId: null }));
+    expect(s.projects[id].collectionId).toBe(cid);
+    // (was rejected) two folders name the project: the one it points at stays, the other loses the pointer
     const second = { ...ok.collections[cid], id: "col_two", projectId: id };
-    expect(validateWorkspaceState({ ...ok, collections: { ...ok.collections, col_two: second } }).ok).toBe(false);
+    s = load({ ...ok, collections: { ...ok.collections, col_two: second } });
+    expect(s.collections.col_two.projectId).toBeNull();
+    expect(s.collections[cid].projectId).toBe(id);
+    expect(Object.keys(s.collections)).toContain("col_two");
     const other = { ...ok.projects[id], id: "prj_two", key: "two", collectionId: "col_two" };
     const c2 = { ...ok.collections[cid], id: "col_two", projectId: null };
-    expect(validateWorkspaceState({ ...ok, collections: { ...ok.collections, col_two: c2 }, projects: { ...ok.projects, prj_two: other } }).ok).toBe(true);
+    load({ ...ok, collections: { ...ok.collections, col_two: c2 }, projects: { ...ok.projects, prj_two: other } });
   });
 
   it("deleteCollection and deleteProject keep the links valid", () => {

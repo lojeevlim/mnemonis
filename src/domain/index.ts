@@ -3,6 +3,7 @@ export * from "./context";
 export * from "./state";
 export * from "./queries";
 export * from "./memoryOps";
+export * from "./collectionDefault";
 export * from "./limits";
 export * from "./relations";
 export * from "./versioning";

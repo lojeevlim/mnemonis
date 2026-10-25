@@ -1,6 +1,6 @@
 import { DomainError, type DomainContext } from "./context";
 import type { Actor, Collection, Mutation, Relation, RelationProvenance, WorkspaceState } from "./types";
-import { assertActor, assertRelationLimits } from "./limits";
+import { LIMITS, assertActor, assertRelationLimits } from "./limits";
 import { assertSafeId, freshId, requireText, safeGet } from "./util";
 import { currentSavedRevision, getMemory, listMemories, memoryIdsWithSaved, pendingRevisionFor } from "./queries";
 
@@ -333,12 +333,27 @@ export function rejectOrphanedRelations(state: WorkspaceState, ctx: DomainContex
   return ids.length ? rejectRelationsIn(state, ids, () => ctx.now()) : state;
 }
 
+function assertCollectionNameLength(name: string): void {
+  if (name.length > LIMITS.collectionName) {
+    throw new DomainError("too_large", `Collection name is too long (max ${LIMITS.collectionName} characters)`);
+  }
+}
+
+/** Caps for a NEW collection: name length and the total number of collections (existing data is never rejected). */
+export function assertCollectionRoom(state: WorkspaceState, name: string): void {
+  assertCollectionNameLength(name);
+  if (Object.keys(state.collections).length >= LIMITS.maxCollections) {
+    throw new DomainError("too_large", `Too many collections (max ${LIMITS.maxCollections})`);
+  }
+}
+
 export function createCollection(
   state: WorkspaceState,
   ctx: DomainContext,
   args: { name: string; description?: string; id?: string },
 ): Mutation<Collection> {
   const name = requireText(args.name, "name");
+  assertCollectionRoom(state, name);
   const col: Collection = {
     id: args.id ?? freshId(ctx, "col", (x) => Object.hasOwn(state.collections, x)),
     name,
@@ -356,6 +371,8 @@ export function updateCollection(
 ): Mutation<Collection> {
   const cur = safeGet(state.collections, args.id);
   if (!cur) throw new DomainError("collection_not_found", `Collection not found: ${args.id}`);
+  // Only a changed name is capped, so an old over-long stored name never blocks editing its description.
+  if (args.name !== undefined && args.name.trim() !== cur.name) assertCollectionNameLength(args.name.trim());
   const next: Collection = {
     ...cur,
     ...(args.name !== undefined && { name: requireText(args.name, "name") }),

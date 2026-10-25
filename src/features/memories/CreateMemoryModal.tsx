@@ -40,7 +40,8 @@ export function CreateMemoryModal({ open, onClose, onCreated, defaultCollectionI
   return (
     <Modal open={open} onClose={onClose} title="New memory">
       <MemoryForm
-        initial={{ collectionId: defaultCollectionId ?? null }}
+        initial={{ collectionId: defaultCollectionId ?? undefined }}
+        automaticCollection
         collections={collections}
         knownTypes={knownTypes}
         submitLabel="Create memory"

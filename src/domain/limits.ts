@@ -16,6 +16,8 @@ export const LIMITS = {
   source: 500,
   provenance: 200,
   actorName: 100,
+  collectionName: 100,
+  maxCollections: 200,
 } as const;
 
 const tooLarge = (msg: string) => new DomainError("too_large", msg);

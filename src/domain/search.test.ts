@@ -9,7 +9,7 @@ function build() {
   const { ctx, state } = setup();
   let s = createCollection(state, ctx, { name: "Work", id: "col_work" }).state;
   const add = (input: Parameters<typeof createMemory>[2]) => {
-    s = createMemory(s, ctx, input).state;
+    s = createMemory(s, ctx, { collectionId: null, ...input }).state;
   };
   add({ id: "alpha", title: "Alpha", content: "nothing here", type: "fact", actor: USER });
   add({ id: "m_pg", title: "Postgres", content: "database notes", type: "technical_decision", tags: ["db"], collectionId: "col_work", actor: USER });

@@ -52,7 +52,7 @@ describe("Collections", () => {
     await store().createCollection("Work");
     const col = Object.values(store().state!.collections)[0];
     await store().createMemory({ title: "In work", collectionId: col.id });
-    await store().createMemory({ title: "Elsewhere" });
+    await store().createMemory({ title: "Elsewhere", collectionId: null });
     renderPage();
 
     const list = screen.getByRole("list", { name: "Collections" });

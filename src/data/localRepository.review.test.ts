@@ -42,7 +42,8 @@ describe("MAJOR-2 serialized mutations", () => {
     expect(results.map((r) => r.status)).toEqual(["fulfilled", "fulfilled", "rejected", "fulfilled"]);
     const persisted = JSON.parse(storage.getItem(STORAGE_KEY)!).state;
     expect(Object.keys(persisted.memories)).toHaveLength(2);
-    expect(Object.keys(persisted.collections)).toHaveLength(1);
+    // "Col" plus the auto-created "Unsorted" the two new memories landed in
+    expect(Object.keys(persisted.collections)).toHaveLength(2);
   });
 });
 

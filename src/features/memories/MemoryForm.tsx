@@ -2,21 +2,27 @@ import { useId, useMemo, useState, type FormEvent } from "react";
 import { Button, Input, Select, TagInput, Textarea } from "lojee-ui";
 import { BUILT_IN_MEMORY_TYPES, type Collection } from "../../domain";
 import { typeLabel } from "../../components/memoryMeta";
+import { UNSORTED_NAME } from "../../domain/collectionDefault";
+import { normalizeTitle, parseTitlePrefix } from "../../domain/titlePrefix";
 
 export interface MemoryFormValues {
   title: string;
   content: string;
   type: string;
   tags: string[];
-  collectionId: string | null;
+  /** undefined = automatic (the title-prefix collection, else Unsorted); null = no collection. */
+  collectionId: string | null | undefined;
 }
 
 const CUSTOM = "__custom__";
 const NO_COLLECTION = "";
+const AUTO_COLLECTION = "__auto__";
 
 interface Props {
   initial?: Partial<MemoryFormValues>;
   collections: Collection[];
+  /** Offer "Automatic" as the first (default) collection choice, as when creating a memory. */
+  automaticCollection?: boolean;
   /** Custom types already used in the workspace, offered as options. */
   knownTypes?: string[];
   submitLabel: string;
@@ -25,7 +31,16 @@ interface Props {
   onCancel: () => void;
 }
 
-export function MemoryForm({ initial, collections, knownTypes = [], submitLabel, busy, onSubmit, onCancel }: Props) {
+export function MemoryForm({
+  initial,
+  collections,
+  automaticCollection,
+  knownTypes = [],
+  submitLabel,
+  busy,
+  onSubmit,
+  onCancel,
+}: Props) {
   const uid = useId();
   const initialType = initial?.type ?? "fact";
   const typeValues = useMemo(() => {
@@ -40,18 +55,26 @@ export function MemoryForm({ initial, collections, knownTypes = [], submitLabel,
   const [typeChoice, setTypeChoice] = useState(initialType);
   const [customType, setCustomType] = useState("");
   const [tags, setTags] = useState<string[]>(initial?.tags ?? []);
-  const [collectionId, setCollectionId] = useState<string>(initial?.collectionId ?? NO_COLLECTION);
+  const [collectionId, setCollectionId] = useState<string>(
+    initial?.collectionId ?? (automaticCollection && initial?.collectionId === undefined ? AUTO_COLLECTION : NO_COLLECTION),
+  );
   const [submitted, setSubmitted] = useState(false);
 
   const type = (typeChoice === CUSTOM ? customType : typeChoice).trim();
   const titleInvalid = submitted && !title.trim();
   const typeInvalid = submitted && !type;
+  // What "Automatic" resolves to for the title typed so far (mirrors the domain rule: prefix match, else Unsorted).
+  const autoLabel = useMemo(() => {
+    const prefix = parseTitlePrefix(title);
+    const match = prefix === null ? undefined : collections.find((c) => normalizeTitle(c.name) === normalizeTitle(prefix));
+    return `Automatic (${match ? match.name : UNSORTED_NAME})`;
+  }, [title, collections]);
 
   const submit = (e: FormEvent) => {
     e.preventDefault();
     setSubmitted(true);
     if (!title.trim() || !type) return;
-    onSubmit({ title: title.trim(), content, type, tags, collectionId: collectionId || null });
+    onSubmit({ title: title.trim(), content, type, tags, collectionId: collectionId === AUTO_COLLECTION ? undefined : collectionId || null });
   };
 
   const field = "flex flex-col gap-1";
@@ -133,6 +156,7 @@ export function MemoryForm({ initial, collections, knownTypes = [], submitLabel,
             value={collectionId}
             onChange={(e) => setCollectionId(e.target.value)}
             options={[
+              ...(automaticCollection ? [{ value: AUTO_COLLECTION, label: autoLabel }] : []),
               { value: NO_COLLECTION, label: "No collection" },
               ...collections.map((c) => ({ value: c.id, label: c.name })),
             ]}

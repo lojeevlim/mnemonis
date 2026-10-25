@@ -12,6 +12,7 @@ import type {
   WorkspaceState,
 } from "./types";
 import { assertActor, assertIdentityLimits, assertWithinLimits } from "./limits";
+import { resolveCollection } from "./collectionDefault";
 import { autoRelate } from "./titlePrefix";
 import { autoRelateTopics } from "./topicLinks";
 import { describeChange } from "./versioning";
@@ -24,7 +25,10 @@ export interface CreateMemoryInput {
   content?: string;
   type?: MemoryType;
   tags?: string[];
+  /** undefined = automatic (title-prefix collection, else "Unsorted"); null = no collection. */
   collectionId?: string | null;
+  /** An existing collection id or name (agents may only name existing ones; users may create). */
+  collection?: string;
   source?: string;
   provenance?: MemoryProvenance;
   metadata?: Metadata;
@@ -33,7 +37,10 @@ export interface CreateMemoryInput {
 
 export type MemoryPatch = Partial<
   Pick<MemorySnapshot, "title" | "content" | "type" | "tags" | "collectionId" | "metadata">
->;
+> & {
+  /** An existing collection id or name; ignored when `collectionId` is given. Never re-defaulted on update. */
+  collection?: string;
+};
 
 export function checkCollection(state: WorkspaceState, collectionId: string | null): void {
   if (collectionId !== null && !safeGet(state.collections, collectionId)) {
@@ -117,7 +124,16 @@ export function createMemory(
 ): Mutation<Memory> {
   assertActor(input.actor);
   const title = requireText(input.title, "title");
-  const collectionId = input.collectionId ?? null;
+  const po = input.provenance?.origin;
+  const resolved = resolveCollection(state, ctx, {
+    collectionId: input.collectionId,
+    collection: input.collection,
+    title,
+    actor: input.actor,
+    origin: po === "import" || po === "system" ? po : input.actor.kind,
+  });
+  state = resolved.state;
+  const collectionId = resolved.collectionId;
   checkCollection(state, collectionId);
   const id = input.id ?? freshId(ctx, "mem", (x) => Object.hasOwn(state.memories, x));
   assertSafeId(id, "memory");
@@ -153,7 +169,17 @@ export function updateMemory(
   assertActor(args.actor);
   const before = baseSnapshot(state, args.id, args.actor);
   if (before.archived) throw new DomainError("memory_archived", "Restore the memory before editing it");
-  const { patch } = args;
+  let { patch } = args;
+  if (patch.collection !== undefined && patch.collectionId === undefined) {
+    const r = resolveCollection(state, ctx, {
+      collection: patch.collection,
+      title: before.title,
+      actor: args.actor,
+      applyDefault: false,
+    });
+    state = r.state;
+    patch = { ...patch, collectionId: r.collectionId };
+  }
   const snapshot: MemorySnapshot = {
     ...before,
     ...(patch.title !== undefined && { title: requireText(patch.title, "title") }),

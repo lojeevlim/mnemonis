@@ -38,7 +38,7 @@ const infoOf = (snap: { title: string; tags: string[]; archived: boolean }, demo
   const p = parseTitlePrefix(snap.title);
   return {
     project: p === null ? null : normalizeTitle(p),
-    topics: snap.tags.map(topicKey).filter((t, i, a) => t !== "" && a.indexOf(t) === i),
+    topics: [...new Set(snap.tags.map(topicKey).filter((t) => t !== ""))],
     archived: snap.archived,
     demo,
   };

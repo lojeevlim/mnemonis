@@ -12,7 +12,7 @@ import type {
   WorkspaceState,
 } from "./types";
 import { assertActor, assertIdentityLimits, assertWithinLimits } from "./limits";
-import { resolveCollection } from "./collectionDefault";
+import { assertNotBothCollectionFields, resolveCollection } from "./collectionDefault";
 import { autoRelate } from "./titlePrefix";
 import { autoRelateTopics } from "./topicLinks";
 import { describeChange } from "./versioning";
@@ -170,6 +170,7 @@ export function updateMemory(
   const before = baseSnapshot(state, args.id, args.actor);
   if (before.archived) throw new DomainError("memory_archived", "Restore the memory before editing it");
   let { patch } = args;
+  assertNotBothCollectionFields(patch.collectionId, patch.collection);
   if (patch.collection !== undefined && patch.collectionId === undefined) {
     const r = resolveCollection(state, ctx, {
       collection: patch.collection,

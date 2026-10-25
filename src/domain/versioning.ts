@@ -15,7 +15,7 @@ import type { Actor, MemoryFieldName, MemorySnapshot, Mutation, Revision, Worksp
 const hasSavedRevision = (state: WorkspaceState, memoryId: string): boolean =>
   !!currentSavedRevision(state, memoryId);
 
-const FIELD_LABEL: Record<MemoryFieldName, string> = {
+export const FIELD_LABEL: Record<MemoryFieldName, string> = {
   title: "title",
   content: "content",
   type: "type",

@@ -203,6 +203,37 @@ describe("Inbox page: actor name and collection names", () => {
   });
 });
 
+describe("Inbox page: target collection", () => {
+  it("names the collection a pending new memory will be filed in (by title prefix)", async () => {
+    await store().createCollection("Finance");
+    await store().createMemory({ title: "Finance: budget" }, { actor: agent });
+    renderPage();
+    const item = inboxItem("Finance: budget");
+    expect(within(item).getByText("Collection: Finance")).toBeInTheDocument();
+    expect(item.textContent).not.toMatch(/col_|collectionId/);
+  });
+
+  it("shows Unsorted for a new memory with no matching collection, and No collection for an explicit none", async () => {
+    await store().createMemory({ title: "Loose idea" }, { actor: agent });
+    await store().createMemory({ title: "Bare note", collectionId: null }, { actor: agent });
+    renderPage();
+    expect(within(inboxItem("Loose idea")).getByText("Collection: Unsorted")).toBeInTheDocument();
+    expect(within(inboxItem("Bare note")).getByText("Collection: No collection")).toBeInTheDocument();
+  });
+
+  it("shows the target name for a pending collection change and none when the collection is untouched", async () => {
+    await store().createCollection("Projects");
+    const col = Object.values(store().state!.collections).find((c) => c.name === "Projects")!;
+    const m = await store().createMemory({ title: "Plan" });
+    const n = await store().createMemory({ title: "Other" });
+    await store().updateMemory(m!.id, { collectionId: col.id }, { actor: agent });
+    await store().updateMemory(n!.id, { content: "edited" }, { actor: agent });
+    renderPage();
+    expect(within(inboxItem("Plan")).getByText("Collection: Projects")).toBeInTheDocument();
+    expect(within(inboxItem("Other")).queryByText(/^Collection:/)).not.toBeInTheDocument();
+  });
+});
+
 describe("Inbox page: bulk actions act only on what is displayed", () => {
   it("Approve all leaves a proposal that arrived after render pending and says so", async () => {
     await store().createMemory({ title: "Seen" }, { actor: agent });

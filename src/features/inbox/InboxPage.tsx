@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { Badge, Button, EmptyState } from "lojee-ui";
 import { diffPending, listPendingRelations, pendingChanges, pendingCount, timeline } from "../../domain";
-import { FieldDiff } from "../../components/FieldDiff";
+import { collectionLabel, FieldDiff } from "../../components/FieldDiff";
 import { InlineError } from "../../components/InlineError";
 import { OriginBadge } from "../../components/OriginBadge";
 import { PageHeader } from "../../components/PageHeader";
@@ -81,6 +81,8 @@ function InboxSection() {
           {pending.map((p) => {
             const kind = KIND_META[p.kind];
             const diff = diffs.get(p.revisionId);
+            // Where approving will file the memory (shown for a new memory and for any collection change).
+            const target = diff?.fields.find((f) => f.field === "collectionId");
             return (
               <li key={p.revisionId} className="space-y-2 rounded-lg border border-border p-3">
                 <div className="flex flex-wrap items-center gap-2">
@@ -116,6 +118,11 @@ function InboxSection() {
                   {p.note ? `${p.note} · ` : ""}
                   {formatDateTime(p.createdAt)}
                 </p>
+                {target && (
+                  <p className="text-xs font-medium text-fg">
+                    {`Collection: ${collectionLabel(state.collections, target.after)}`}
+                  </p>
+                )}
                 <FieldDiff changes={diff?.fields ?? []} collections={state.collections} />
               </li>
             );

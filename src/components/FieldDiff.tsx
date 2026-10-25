@@ -1,10 +1,20 @@
-import type { FieldChange, MemoryFieldValue } from "../domain";
+import { FIELD_LABEL, type FieldChange, type MemoryFieldValue } from "../domain";
 
 export function showValue(v: MemoryFieldValue | undefined): string {
   if (v === undefined || v === null || v === "") return "—";
   if (Array.isArray(v)) return v.length ? v.join(", ") : "—";
   if (typeof v === "object") return JSON.stringify(v);
   return String(v);
+}
+
+/** A collectionId as the user should read it: the collection name, "No collection" for null, never a raw id. */
+export function collectionLabel(
+  collections: Record<string, { name: string }>,
+  v: MemoryFieldValue | undefined,
+): string {
+  if (v === undefined) return "—";
+  if (v === null) return "No collection";
+  return typeof v === "string" && Object.hasOwn(collections, v) ? collections[v].name : "Unknown collection";
 }
 
 interface FieldDiffProps {
@@ -15,15 +25,13 @@ interface FieldDiffProps {
 
 export function FieldDiff({ changes, collections }: FieldDiffProps) {
   const show = (field: string, v: MemoryFieldValue | undefined) =>
-    field === "collectionId" && typeof v === "string" && collections && Object.hasOwn(collections, v)
-      ? collections[v].name
-      : showValue(v);
+    field === "collectionId" && collections ? collectionLabel(collections, v) : showValue(v);
   if (changes.length === 0) return <p className="text-xs text-fg-muted">No differences.</p>;
   return (
     <div className="space-y-2">
       {changes.map((c) => (
         <div key={c.field} className="rounded-md border border-border">
-          <div className="border-b border-border px-2 py-1 text-xs font-medium text-fg-muted">{c.field}</div>
+          <div className="border-b border-border px-2 py-1 text-xs font-medium text-fg-muted">{FIELD_LABEL[c.field]}</div>
           {c.lines ? (
             <pre className="overflow-x-auto p-2 font-mono text-xs leading-relaxed" aria-label="Content diff">
               {c.lines.map((l, i) => (

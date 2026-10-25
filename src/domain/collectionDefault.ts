@@ -28,10 +28,29 @@ export interface ResolveCollectionInput {
 
 const invalid = (msg: string) => new DomainError("invalid_input", msg);
 
+/**
+ * The collection whose name matches `name` (trimmed, whitespace-collapsed, case-insensitive). Names are not
+ * unique ("Work" and "work" can both exist), so a collision is broken deterministically, independent of
+ * insertion order: the OLDEST collection wins (earliest createdAt, then smallest id).
+ * Creation is deliberately left unchanged (duplicates stay allowed) because stored workspaces, imports and
+ * existing tests may already contain equal names; rejecting them could break existing data.
+ */
 const findByName = (state: WorkspaceState, name: string): Collection | undefined => {
   const key = normalizeTitle(name);
-  return Object.values(state.collections).find((c) => normalizeTitle(c.name) === key);
+  let best: Collection | undefined;
+  for (const c of Object.values(state.collections)) {
+    if (normalizeTitle(c.name) !== key) continue;
+    if (!best || c.createdAt < best.createdAt || (c.createdAt === best.createdAt && c.id < best.id)) best = c;
+  }
+  return best;
 };
+
+/** `collection` (id or name) and `collectionId` are alternatives: giving both, even `collectionId: null`, is ambiguous. */
+export function assertNotBothCollectionFields(collectionId: unknown, collection: unknown): void {
+  if (collectionId !== undefined && collection !== undefined) {
+    throw invalid("give either collection or collectionId, not both");
+  }
+}
 
 /** A caller-supplied collection name: a string of 1-100 chars (after trimming) without control characters. */
 function checkName(raw: unknown): string {
@@ -63,6 +82,7 @@ export function resolveCollection(
   input: ResolveCollectionInput,
 ): { state: WorkspaceState; collectionId: string | null } {
   const { collectionId, collection, actor } = input;
+  assertNotBothCollectionFields(collectionId, collection);
 
   if (collectionId !== undefined) {
     if (collectionId === null) return { state, collectionId: null };
@@ -76,7 +96,8 @@ export function resolveCollection(
 
   if (collection !== undefined) {
     const name = checkName(collection);
-    assertSafeId(name, "collection");
+    // Reserved keys are only invalid as IDs (the explicit collectionId path); as a name, "constructor" is just
+    // text. The id lookup below is own-property only, so it cannot reach Object.prototype.
     const byId = safeGet(state.collections, name);
     if (byId) return { state, collectionId: byId.id };
     const byName = findByName(state, name);

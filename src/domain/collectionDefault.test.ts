@@ -87,13 +87,73 @@ describe("resolveCollection", () => {
     expect(go("a".repeat(LIMITS.collectionName))).toBeUndefined();
   });
 
-  it("rejects prototype-pollution ids and names", () => {
+  it("rejects reserved ids, but treats reserved words as ordinary names", () => {
     const { ctx, state } = setup();
     for (const bad of ["__proto__", "constructor", "prototype"]) {
       expect(codeOf(() => resolveCollection(state, ctx, { collectionId: bad, title: "x", actor: USER }))).toBe("invalid_input");
-      expect(codeOf(() => resolveCollection(state, ctx, { collection: bad, title: "x", actor: USER }))).toBe("invalid_input");
+      // As a name: unknown is not-found for an agent, created (with a fresh safe id) for a user.
+      expect(codeOf(() => resolveCollection(state, ctx, { collection: bad, title: "x", actor: AGENT }))).toBe("collection_not_found");
+      const made = resolveCollection(state, ctx, { collection: bad, title: "x", actor: USER });
+      expect(names(made.state)).toEqual([bad]);
+      expect(made.collectionId).not.toBe(bad);
+      // ...and an existing collection with that name is matched by name, also for an agent.
+      expect(resolveCollection(made.state, ctx, { collection: bad, title: "x", actor: AGENT }).collectionId).toBe(made.collectionId);
     }
     expect(codeOf(() => resolveCollection(state, ctx, { collectionId: "toString", title: "x", actor: USER }))).toBe("collection_not_found");
+  });
+
+  it("breaks name collisions deterministically: oldest createdAt, then smallest id, not insertion order", () => {
+    const { ctx, state } = setup();
+    const col = (id: string, name: string, createdAt: string) => ({ id, name, description: "", createdAt });
+    const build = (list: ReturnType<typeof col>[]) => ({
+      ...state,
+      collections: Object.fromEntries(list.map((c) => [c.id, c])),
+    });
+    const newer = col("c_a", "Work", "2026-02-01T00:00:00.000Z");
+    const older = col("c_z", "work", "2026-01-01T00:00:00.000Z");
+    for (const order of [[newer, older], [older, newer]]) {
+      const s = build(order);
+      expect(resolveCollection(s, ctx, { collection: "WORK", title: "x", actor: AGENT }).collectionId).toBe("c_z");
+      expect(resolveCollection(s, ctx, { title: "Work: note", actor: AGENT }).collectionId).toBe("c_z");
+    }
+    const t1 = col("c_b", "Dup", "2026-01-01T00:00:00.000Z");
+    const t2 = col("c_a", "dup", "2026-01-01T00:00:00.000Z");
+    for (const order of [[t1, t2], [t2, t1]]) {
+      expect(resolveCollection(build(order), ctx, { collection: "dup", title: "x", actor: AGENT }).collectionId).toBe("c_a");
+    }
+  });
+
+  it("title prefixes: only a real `<project>:` prefix naming an existing collection matches", () => {
+    const { ctx, state } = setup();
+    let s = createCollection(state, ctx, { id: "c1", name: "Note" }).state;
+    s = createCollection(s, ctx, { id: "c2", name: "http" }).state;
+    const of = (title: string) => resolveCollection(s, ctx, { title, actor: AGENT }).collectionId;
+    expect(of("Note: x")).toBe("c1");
+    expect(of("note:x")).toBe("c1");
+    expect(of("http://x")).toBe("c2"); // "http" is the prefix before the first colon
+    expect(names(resolveCollection(s, ctx, { title: "ftp://x", actor: USER }).state)).toContain(UNSORTED_NAME);
+    expect(of("Notes: x")).not.toBe("c1");
+    expect(of("No colon here")).not.toBe("c1");
+    expect(of(":leading colon")).not.toBe("c1");
+  });
+
+  it("rejects control characters in a caller-supplied collection, for users and agents", () => {
+    const { ctx, state } = setup();
+    for (const actor of [USER, AGENT]) {
+      for (const bad of ["a\u0000b", "a\nb", "a\u007fb", "a\u0085b"]) {
+        expect(codeOf(() => resolveCollection(state, ctx, { collection: bad, title: "x", actor }))).toBe("invalid_input");
+      }
+    }
+  });
+
+  it("rejects collection and collectionId together (collectionId null counts), on create and update", () => {
+    const { ctx, state } = setup();
+    const s = createCollection(state, ctx, { id: "c1", name: "Work" }).state;
+    expect(codeOf(() => resolveCollection(s, ctx, { collectionId: "c1", collection: "Work", title: "x", actor: USER }))).toBe("invalid_input");
+    expect(codeOf(() => createMemory(s, ctx, { title: "t", collectionId: null, collection: "Work", actor: USER }))).toBe("invalid_input");
+    const m = createMemory(s, ctx, { id: "m1", title: "t", actor: USER });
+    expect(codeOf(() => updateMemory(m.state, ctx, { id: "m1", patch: { collectionId: null, collection: "Work" }, actor: AGENT }))).toBe("invalid_input");
+    expect(codeOf(() => updateMemory(m.state, ctx, { id: "m1", patch: { collectionId: "c1", collection: "Work" }, actor: USER }))).toBe("invalid_input");
   });
 
   it("caps the number of collections (explicit creation errors, the Unsorted default just falls back to none)", () => {

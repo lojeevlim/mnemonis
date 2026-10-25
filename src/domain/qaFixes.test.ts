@@ -32,7 +32,9 @@ describe("collections vs pending proposals", () => {
 
   it("deleteCollection refuses while a pending proposal's snapshot references it", () => {
     const { state } = withProposal();
-    expect(getMemory(state, "m1")?.collectionId).not.toBe("c1"); // saved content is not in c1 (it is in the auto "Unsorted")
+    // Saved content is not in c1: seedSaved's automatic default put it in the Unsorted collection.
+    expect(getMemory(state, "m1")?.collectionId).toBe("col_unsorted");
+    expect(state.collections.col_unsorted?.name).toBe("Unsorted");
     expect(codeOf(() => deleteCollection(state, { id: "c1" }))).toBe("collection_not_empty");
   });
 

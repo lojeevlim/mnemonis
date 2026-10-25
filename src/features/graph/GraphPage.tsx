@@ -231,7 +231,7 @@ export function GraphPage() {
     <div className="mx-auto max-w-7xl space-y-3 p-4">
       <PageHeader
         title="Knowledge Graph"
-        description={'Memories and the relations you or your agents have stored between them. Memories titled "<project>: ..." (or "<project> ...") are also grouped around their project, drawn as a big circle even when no memory titled "<project>" exists yet.'}
+        description={'Memories and the relations you or your agents have stored between them. Memories are grouped around their project, drawn as a big circle even when no memory is titled like the project. The project is detected from the repository an agent works in; a "<project>: ..." title prefix is only a fallback for memories without a project.'}
         actions={
           <Button
             size="sm"

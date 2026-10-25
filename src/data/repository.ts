@@ -5,6 +5,8 @@ import type {
   Memory,
   MemoryPatch,
   Mutation,
+  Project,
+  Reassignment,
   Revision,
   Relation,
   RelationProvenance,
@@ -69,6 +71,17 @@ export interface MemoryRepository {
   createCollection(args: { name: string; description?: string }): Promise<Mutation<Collection>>;
   updateCollection(args: { id: string; name?: string; description?: string }): Promise<Mutation<Collection>>;
   deleteCollection(args: { id: string }): Promise<Mutation>;
+
+  /**
+   * Projects are user-only (an agent actor is refused with "forbidden"). Errors: project_not_found,
+   * duplicate_project, project_in_use, too_large, invalid_input.
+   */
+  createProject(args: { name: string; repo?: string; workspace?: string; actor: Actor }): Promise<Mutation<Project>>;
+  confirmProject(args: { id: string; actor: Actor }): Promise<Mutation<Project>>;
+  renameProject(args: { id: string; name: string; actor: Actor }): Promise<Mutation<Project>>;
+  deleteProject(args: { id: string; actor: Actor }): Promise<Mutation>;
+  /** Files Unsorted memories (the given ids, default every suggestion) into their uniquely matching project. Value = what was filed. */
+  fileUnsorted(args: { ids?: string[]; actor: Actor }): Promise<Mutation<Reassignment[]>>;
 
   /** Review decisions are user-only (the domain refuses agent actors). */
   approve(args: { revisionId: string; actor: Actor }): Promise<Mutation<Revision>>;

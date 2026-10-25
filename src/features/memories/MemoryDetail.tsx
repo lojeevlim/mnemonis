@@ -138,7 +138,7 @@ export function MemoryDetail({ memoryId, onOpenMemory }: { memoryId: string; onO
               {proposal.note ? ` · ${proposal.note}` : ""} · {formatDateTime(proposal.createdAt)}
             </span>
           </div>
-          <FieldDiff changes={diffPending(state, proposal.id).fields} collections={state.collections} />
+          <FieldDiff changes={diffPending(state, proposal.id).fields} collections={state.collections} projects={state.projects} />
           <div className="flex gap-2">
             <Button size="sm" icon="check" onClick={() => void act(() => approve(proposal.id), "Approved")}>
               Approve

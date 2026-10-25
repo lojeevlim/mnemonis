@@ -46,6 +46,11 @@ const USER_ONLY = new Set([
   "approveAllDetailed",
   "rejectAllDetailed",
   "removeRelation",
+  "createProject",
+  "confirmProject",
+  "renameProject",
+  "deleteProject",
+  "fileUnsorted",
 ]);
 
 const etag = (rev: number) => `"${rev}"`;
@@ -156,6 +161,11 @@ export class RemoteRepository implements MemoryRepository {
   createCollection: MemoryRepository["createCollection"] = (a) => this.op("createCollection", a);
   updateCollection: MemoryRepository["updateCollection"] = (a) => this.op("updateCollection", a);
   deleteCollection: MemoryRepository["deleteCollection"] = (a) => this.op("deleteCollection", a);
+  createProject: MemoryRepository["createProject"] = ({ actor, ...args }) => this.op("createProject", args, actor);
+  confirmProject: MemoryRepository["confirmProject"] = ({ actor, ...args }) => this.op("confirmProject", args, actor);
+  renameProject: MemoryRepository["renameProject"] = ({ actor, ...args }) => this.op("renameProject", args, actor);
+  deleteProject: MemoryRepository["deleteProject"] = ({ actor, ...args }) => this.op("deleteProject", args, actor);
+  fileUnsorted: MemoryRepository["fileUnsorted"] = ({ actor, ...args }) => this.op("fileUnsorted", args, actor);
   approve: MemoryRepository["approve"] = ({ actor, ...args }) => this.op("approve", args, actor);
   reject: MemoryRepository["reject"] = ({ actor, ...args }) => this.op("reject", args, actor);
   approveRelation: MemoryRepository["approveRelation"] = ({ actor, ...args }) => this.op("approveRelation", args, actor);

@@ -17,15 +17,28 @@ export function collectionLabel(
   return typeof v === "string" && Object.hasOwn(collections, v) ? collections[v].name : "Unknown collection";
 }
 
+/** A projectId as the user should read it: the project name, "No project" for null, never a raw id. */
+export function projectLabel(projects: Record<string, { name: string }>, v: MemoryFieldValue | undefined): string {
+  if (v === undefined) return "—";
+  if (v === null) return "No project";
+  return typeof v === "string" && Object.hasOwn(projects, v) ? projects[v].name : "Unknown project";
+}
+
 interface FieldDiffProps {
   changes: FieldChange[];
   /** When given, collectionId values are shown as the collection name instead of the raw id. */
   collections?: Record<string, { name: string }>;
+  /** When given, projectId values are shown as the project name instead of the raw id. */
+  projects?: Record<string, { name: string }>;
 }
 
-export function FieldDiff({ changes, collections }: FieldDiffProps) {
+export function FieldDiff({ changes, collections, projects }: FieldDiffProps) {
   const show = (field: string, v: MemoryFieldValue | undefined) =>
-    field === "collectionId" && collections ? collectionLabel(collections, v) : showValue(v);
+    field === "collectionId" && collections
+      ? collectionLabel(collections, v)
+      : field === "projectId" && projects
+        ? projectLabel(projects, v)
+        : showValue(v);
   if (changes.length === 0) return <p className="text-xs text-fg-muted">No differences.</p>;
   return (
     <div className="space-y-2">

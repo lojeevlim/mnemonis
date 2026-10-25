@@ -1,13 +1,18 @@
 import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { AlertDialog, Badge, Button, Card, EmptyState, Modal } from "lojee-ui";
-import type { Collection } from "../../domain";
+import { suggestReassignments, unsortedCount, type Collection } from "../../domain";
 import { useAction, useMemories } from "../../components/hooks";
 import { DemoBadge } from "../../components/DemoBadge";
 import { PageHeader } from "../../components/PageHeader";
 import { StatusBadge } from "../../components/StatusBadge";
 import { isDemoMemory } from "../../components/memoryMeta";
+import { normalizeTitle } from "../../domain/titlePrefix";
 import { useWorkspace } from "../../stores/workspaceStore";
+import { useToast } from "../../components/ToastProvider";
+import { InlineError } from "../../components/InlineError";
+import { useInlineAction } from "../../components/useInlineAction";
+import { ProjectsSection } from "./ProjectsSection";
 import { CollectionForm, type CollectionFormValues } from "./CollectionForm";
 
 type Dialog = { kind: "create" } | { kind: "rename"; collection: Collection } | { kind: "delete"; collection: Collection } | null;
@@ -17,8 +22,11 @@ export function CollectionsPage() {
   const createCollection = useWorkspace((s) => s.createCollection);
   const updateCollection = useWorkspace((s) => s.updateCollection);
   const deleteCollection = useWorkspace((s) => s.deleteCollection);
+  const fileUnsorted = useWorkspace((s) => s.fileUnsorted);
   const memories = useMemories();
   const act = useAction();
+  const toast = useToast();
+  const filing = useInlineAction();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [dialog, setDialog] = useState<Dialog>(null);
   const [busy, setBusy] = useState(false);
@@ -36,7 +44,14 @@ export function CollectionsPage() {
     return map;
   }, [memories]);
 
+  // Unsorted memories an agent wrote that match exactly one project: only filed when the user asks (own ones are filed automatically).
+  const fileable = useMemo(() => (state ? suggestReassignments(state).filter((s) => s.origin === "agent") : []), [state]);
+  const unsorted = useMemo(() => (state ? unsortedCount(state) : 0), [state]);
   if (!state) return null;
+  const fileThese = async () => {
+    const { value } = await filing.run(() => fileUnsorted(fileable.map((s) => s.memoryId)));
+    if (value) toast(`Filed ${value.length} ${value.length === 1 ? "memory" : "memories"} into their projects`, "success");
+  };
   const selected = collections.find((c) => c.id === selectedId) ?? null;
   const selectedMembers = selected ? (members.get(selected.id) ?? []) : [];
   const countOf = (id: string) => (members.get(id) ?? []).filter((m) => !m.archived).length;
@@ -79,6 +94,16 @@ export function CollectionsPage() {
         }
       />
 
+      {fileable.length > 0 && (
+        <div role="status" className="flex flex-wrap items-center gap-2 rounded-lg border border-amber-500/40 px-3 py-2 text-sm text-fg">
+          <span>{`${unsorted} ${unsorted === 1 ? "memory is" : "memories are"} Unsorted, ${fileable.length} can be filed.`}</span>
+          <Button size="xs" className="ml-auto" onClick={() => void fileThese()}>
+            File these
+          </Button>
+        </div>
+      )}
+      <InlineError message={filing.error} />
+
       {collections.length === 0 ? (
         <EmptyState
           icon="folder"
@@ -108,6 +133,11 @@ export function CollectionsPage() {
                     >
                       {c.name}
                     </button>
+                    {fileable.length > 0 && normalizeTitle(c.name) === "unsorted" && (
+                      <Badge variant="soft" size="sm" color="amber">
+                        {fileable.length} can be filed
+                      </Badge>
+                    )}
                     <Badge variant="soft" size="sm" color="slate">
                       {countOf(c.id)} {countOf(c.id) === 1 ? "memory" : "memories"}
                     </Badge>
@@ -165,6 +195,8 @@ export function CollectionsPage() {
           </Card>
         </div>
       )}
+
+      <ProjectsSection />
 
       <Modal open={dialog?.kind === "create"} onClose={close} title="New collection">
         <CollectionForm submitLabel="Create collection" busy={busy} onSubmit={(v) => void create(v)} onCancel={close} />

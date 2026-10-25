@@ -30,7 +30,7 @@ function RevisionDetails({ state, rev, mode }: { state: WorkspaceState; rev: Rev
     );
   }
   if (!rev.parentRevisionId) return <p className="text-xs text-fg-muted">First revision: nothing to compare against.</p>;
-  return <FieldDiff changes={diffRevisions(state, rev.parentRevisionId, rev.id)} collections={state.collections} />;
+  return <FieldDiff changes={diffRevisions(state, rev.parentRevisionId, rev.id)} collections={state.collections} projects={state.projects} />;
 }
 
 export function RevisionHistory({ state, memory }: { state: WorkspaceState; memory: Memory }) {

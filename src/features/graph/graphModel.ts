@@ -1,4 +1,4 @@
-import { listMemories, listRelations, type MemoryStatus, type WorkspaceState } from "../../domain";
+import { LIMITS, listMemories, listRelations, projectOfMemory, type MemoryStatus, type Project, type WorkspaceState } from "../../domain";
 import { TITLE_PREFIX_LABEL, TITLE_PREFIX_PROCESS, normalizeTitle, parseTitlePrefix } from "../../domain/titlePrefix";
 
 /** Pure graph model helpers: no React, no layout. Edges are stored relations plus view-only title-prefix links. */
@@ -17,9 +17,15 @@ export interface GraphNode {
   childCount: number;
   /** Project hub: at least one title-prefix edge points to this node. */
   isProject: boolean;
-  /** Normalized project key this node belongs to (see `normalizeTitle`): colon children, legacy followers, the project's real memory (when it has members) and its virtual hub. Null otherwise. Independent of filters. */
+  /**
+   * What this node's project is called in the graph (colours are keyed by it): the Project's id for a member of a real
+   * Project, else the normalized title-prefix key (see `normalizeTitle`) of colon children, legacy followers, the
+   * project's real memory (when it has members) and its virtual hub. Null otherwise. Independent of filters.
+   */
   project: string | null;
-  /** Synthetic project hub (id `project:<key>`): no memory is titled like the project yet. Never a real memory id. */
+  /** Display name of the real Project this node belongs to (null for prefix-only keys and non-members). */
+  projectName?: string | null;
+  /** Synthetic project hub (id `project:<projectId>`, or `project:<key>` for a prefix-only key with no Project): no memory is titled like the project yet. Never a real memory id. */
   virtual?: boolean;
 }
 
@@ -72,7 +78,7 @@ export function buildGraph(state: WorkspaceState, opts: { showArchived?: boolean
       demo: !!r.provenance.demo,
       ...(r.label === TITLE_PREFIX_LABEL && r.provenance.process === TITLE_PREFIX_PROCESS ? { prefix: true } : {}),
     }));
-  const { derived, hubs, projectOf } = derivedPrefixLinks(memories, edges);
+  const { derived, hubs, projectOf, names } = derivedPrefixLinks(state, memories, edges);
   edges.push(...derived);
   const degree = degrees(edges);
   const children = new Map<string, number>();
@@ -90,6 +96,7 @@ export function buildGraph(state: WorkspaceState, opts: { showArchived?: boolean
       childCount: children.get(m.id) ?? 0,
       isProject: children.has(m.id),
       project: projectOf.get(m.id) ?? null,
+      projectName: names.get(projectOf.get(m.id) ?? "") ?? null,
     })),
     ...hubs.map(
       (h): GraphNode => ({
@@ -104,6 +111,7 @@ export function buildGraph(state: WorkspaceState, opts: { showArchived?: boolean
         childCount: children.get(h.id) ?? 0,
         isProject: true,
         project: projectOf.get(h.id) ?? null,
+        projectName: names.get(projectOf.get(h.id) ?? "") ?? null,
         virtual: true,
       }),
     ),
@@ -113,6 +121,8 @@ export function buildGraph(state: WorkspaceState, opts: { showArchived?: boolean
 
 const byId = <T extends { id: string }>(a: T, b: T): number => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);
 const collapse = (s: string): string => s.trim().replace(/\s+/g, " ");
+/** Longest key (in characters) the legacy "<project> ..." follower scan looks for: bounds the work per title. */
+const MAX_PREFIX_SCAN = 100;
 
 /** Most common raw casing; ties go to the variant with uppercase letters, then alphabetical. */
 function displayName(votes: string[]): string {
@@ -126,46 +136,67 @@ function displayName(votes: string[]): string {
 
 /**
  * View-only child -> project "part of" edges, minus pairs that already have a stored "part of" relation.
- * - Colon children `<project>: <data>` link to every visible memory titled `<project>`.
- * - Legacy followers (`<project> ...` / `<project>, ...`, no colon) link to the longest project key that has a
- *   real parent or at least one colon child.
- * - A key with no real parent and >= 1 colon child gets a virtual hub (`project:<key>`).
- * Also returns `projectOf` (node id -> project key) for every member, real parent with members, and virtual hub.
+ * - A memory of a real Project (projectOfMemory: its projectId, else its title prefix / exact name) is a member of
+ *   that project whatever its title says. Other colon children `<project>: <data>` form a prefix-only group.
+ * - Members link to every visible memory titled like the project's key (a real parent), else to a hub node:
+ *   `project:<projectId>` for a real Project, the virtual `project:<key>` for a prefix-only key.
+ * - Legacy followers (`<project> ...` / `<project>, ...`, no colon) link to the longest key that has a real parent
+ *   or at least one member.
+ * Also returns `projectOf` (node id -> project value, see GraphNode.project) for every member, real parent with
+ * members, and hub, and `names` (project value -> Project name) for real Projects.
  * A real parent's own project is its key even if its title is itself a member of another project.
+ * Titles longer than LIMITS.title are never scanned and legacy followers only look at the first MAX_PREFIX_SCAN
+ * characters, so a hostile title cannot cost more than a bounded amount of work.
  */
 function derivedPrefixLinks(
-  memories: { id: string; title: string }[],
+  state: WorkspaceState,
+  memories: { id: string; title: string; projectId?: string | null }[],
   stored: GraphEdge[],
-): { derived: GraphEdge[]; hubs: { id: string; title: string }[]; projectOf: Map<string, string> } {
+): { derived: GraphEdge[]; hubs: { id: string; title: string }[]; projectOf: Map<string, string>; names: Map<string, string> } {
   const real = new Map<string, string[]>();
   for (const m of memories) {
+    if (m.title.length > LIMITS.title) continue;
     const key = normalizeTitle(m.title);
     real.set(key, [...(real.get(key) ?? []), m.id]);
   }
   // Any stored "part of" link (even a manual one) suppresses the derived edge, but only title-prefix-provenance links count toward isProject/childCount.
   const have = new Set(stored.filter((e) => e.label === TITLE_PREFIX_LABEL).map((e) => `${e.source}>${e.target}`));
 
+  const hasProjects = Object.keys(state.projects).length > 0;
+  /** group key -> the real Project that group is (its current key). */
+  const projectOfKey = new Map<string, Project>();
   const colon = new Map<string, { id: string; raw: string }[]>();
   const colonOf = new Set<string>();
+  const join = (key: string, id: string, raw: string): void => {
+    colonOf.add(id);
+    colon.set(key, [...(colon.get(key) ?? []), { id, raw }]);
+  };
   for (const m of memories) {
+    if (m.title.length > LIMITS.title) continue;
+    const pr = hasProjects ? projectOfMemory(state, m) : null;
+    if (pr) {
+      projectOfKey.set(pr.key, pr);
+      // The memory titled exactly like the project is its real parent, not a member of itself.
+      if (normalizeTitle(m.title) === pr.key) continue;
+      join(pr.key, m.id, pr.name);
+      continue;
+    }
     const project = parseTitlePrefix(m.title);
     if (project === null) continue;
     // `http://a.com` is a URL, not a `<project>: <data>` title.
     if (m.title.slice(m.title.indexOf(":") + 1).startsWith("//")) continue;
-    colonOf.add(m.id);
-    const key = normalizeTitle(project);
-    colon.set(key, [...(colon.get(key) ?? []), { id: m.id, raw: collapse(project) }]);
+    join(normalizeTitle(project), m.id, collapse(project));
   }
 
   const keys = [...new Set([...colon.keys(), ...real.keys()])].filter((k) => k !== "").sort((a, b) => b.length - a.length || (a < b ? -1 : 1));
   const keySet = new Set(keys);
   const legacy = new Map<string, { id: string; raw: string }[]>();
   for (const m of memories) {
-    if (colonOf.has(m.id)) continue;
+    if (colonOf.has(m.id) || m.title.length > LIMITS.title) continue;
     // Match on the collapsed title itself (not its lowercase form, whose length can differ, e.g. "İ"), longest key first.
     const c = collapse(m.title);
     let found: { key: string; raw: string } | undefined;
-    for (let n = c.length - 1; n > 0 && !found; n--) {
+    for (let n = Math.min(c.length - 1, MAX_PREFIX_SCAN); n > 0 && !found; n--) {
       if (c[n] !== " " && c[n] !== ",") continue;
       const raw = c.slice(0, n);
       const k = raw.toLowerCase();
@@ -178,6 +209,7 @@ function derivedPrefixLinks(
   const derived: GraphEdge[] = [];
   const hubs: { id: string; title: string }[] = [];
   const projectOf = new Map<string, string>();
+  const names = new Map<string, string>();
   const link = (childId: string, parentId: string): void => {
     if (parentId === childId || have.has(`${childId}>${parentId}`)) return;
     derived.push({
@@ -192,24 +224,28 @@ function derivedPrefixLinks(
     });
   };
   for (const key of keys) {
+    const pr = projectOfKey.get(key);
+    const value = pr ? pr.id : key;
+    if (pr) names.set(value, pr.name);
     const parents = real.get(key) ?? [];
     const followers = (legacy.get(key) ?? []).filter((f) => !parents.includes(f.id));
     const children = colon.get(key) ?? [];
     if (parents.length > 0) {
       if (children.length + followers.length > 0) {
-        for (const c of [...children, ...followers]) if (!projectOf.has(c.id)) projectOf.set(c.id, key);
-        for (const p of parents) projectOf.set(p, key);
+        for (const c of [...children, ...followers]) if (!projectOf.has(c.id)) projectOf.set(c.id, value);
+        for (const p of parents) projectOf.set(p, value);
       }
       for (const c of [...children, ...followers]) for (const p of parents) link(c.id, p);
-    } else if (!key.includes("/") && children.length > 0) {
-      const id = `${PROJECT_NODE_PREFIX}${key}`;
-      hubs.push({ id, title: displayName([...children, ...followers].map((c) => c.raw)) });
-      projectOf.set(id, key);
-      for (const c of [...children, ...followers]) if (!projectOf.has(c.id)) projectOf.set(c.id, key);
+    } else if ((pr || !key.includes("/")) && children.length > 0) {
+      // A prefix-only key never collides with a real Project's hub id.
+      const id = `${PROJECT_NODE_PREFIX}${pr ? pr.id : Object.hasOwn(state.projects, key) ? `key:${key}` : key}`;
+      hubs.push({ id, title: pr ? pr.name : displayName([...children, ...followers].map((c) => c.raw)) });
+      projectOf.set(id, value);
+      for (const c of [...children, ...followers]) if (!projectOf.has(c.id)) projectOf.set(c.id, value);
       for (const c of [...children, ...followers]) link(c.id, id);
     }
   }
-  return { derived: derived.sort(byId), hubs, projectOf };
+  return { derived: derived.sort(byId), hubs, projectOf, names };
 }
 
 export function degrees(edges: GraphEdge[]): Map<string, number> {

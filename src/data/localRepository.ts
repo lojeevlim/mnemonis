@@ -4,17 +4,22 @@ import {
   approveAllDetailed,
   approveRelation,
   approveRevision,
+  applyReassignments,
   archiveMemory,
+  confirmProject,
   createCollection,
   createEmptyWorkspace,
   createMemory,
+  createProject,
   deleteCollection,
+  deleteProject,
   migrateWorkspaceState,
   rejectAll,
   rejectAllDetailed,
   rejectRelation,
   rejectRevision,
   removeRelation,
+  renameProject,
   restoreMemory,
   rollbackMemory,
   updateCollection,
@@ -160,6 +165,11 @@ export class LocalRepository implements MemoryRepository {
   createCollection: MemoryRepository["createCollection"] = (a) => this.apply((s, c) => createCollection(s, c, a));
   updateCollection: MemoryRepository["updateCollection"] = (a) => this.apply((s) => updateCollection(s, a));
   deleteCollection: MemoryRepository["deleteCollection"] = (a) => this.apply((s) => deleteCollection(s, a));
+  createProject: MemoryRepository["createProject"] = (a) => this.apply((s, c) => createProject(s, c, a));
+  confirmProject: MemoryRepository["confirmProject"] = (a) => this.apply((s, c) => confirmProject(s, a, c));
+  renameProject: MemoryRepository["renameProject"] = (a) => this.apply((s, c) => renameProject(s, a, c));
+  deleteProject: MemoryRepository["deleteProject"] = (a) => this.apply((s) => deleteProject(s, a));
+  fileUnsorted: MemoryRepository["fileUnsorted"] = (a) => this.apply((s, c) => applyReassignments(s, c, a));
   approve: MemoryRepository["approve"] = (a) => this.apply((s, c) => approveRevision(s, c, a));
   reject: MemoryRepository["reject"] = (a) => this.apply((s, c) => rejectRevision(s, c, a));
   approveRelation: MemoryRepository["approveRelation"] = (a) => this.apply((s, c) => approveRelation(s, c, a));

@@ -92,7 +92,7 @@ describe("Settings", () => {
     expect(await screen.findByText(/^Import failed:/)).toBeInTheDocument();
     expect(memoryCount()).toBe(before);
 
-    const empty = JSON.stringify({ schemaVersion: 2, state: createEmptyWorkspace() });
+    const empty = JSON.stringify({ schemaVersion: 3, state: createEmptyWorkspace() });
     upload(empty);
     expect(await screen.findByText("Replace your workspace with this file?")).toBeInTheDocument();
     expect(screen.getByText(/backup\.json contains 0 memories and 0 saved changes\./)).toBeInTheDocument();

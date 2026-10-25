@@ -109,3 +109,38 @@ describe("workspace store with a remote repository", () => {
     expect(store.getState().repoEpoch).toBe(0);
   });
 });
+
+describe("workspace store project actions over the server", () => {
+  it("creates, renames and deletes a project through the ops API and adopts the returned state", async () => {
+    const { store, fake } = await setup();
+    const p = await store.getState().createProject({ name: "Acme", repo: "https://github.com/acme/app" });
+    expect(p).toMatchObject({ name: "Acme", confirmed: true });
+    expect(fake.calls.at(-1)).toMatchObject({ path: "/api/ops/createProject", body: { name: "Acme", repo: "https://github.com/acme/app" } });
+    expect(Object.keys(store.getState().state!.projects)).toEqual([p!.id]);
+    expect(await store.getState().renameProject(p!.id, "Acme 2")).toBe(true);
+    expect(store.getState().state!.projects[p!.id].name).toBe("Acme 2");
+    expect(await store.getState().deleteProject(p!.id)).toBe(true);
+    expect(store.getState().state!.projects).toEqual({});
+  });
+
+  it("turns the server's project error codes into clear messages", async () => {
+    const { store, fake } = await setup();
+    expect(await store.getState().confirmProject("prj_gone")).toBe(false);
+    expect(store.getState().error).toBe("That project no longer exists. It may have been deleted elsewhere.");
+    await store.getState().createProject({ name: "Acme" });
+    expect(store.getState().error).toBeNull();
+    expect(await store.getState().createProject({ name: "acme" })).toBeUndefined();
+    expect(store.getState().error).toBe("A project with that name already exists. Choose a different name.");
+    const id = Object.keys(store.getState().state!.projects)[0];
+    fake.on("POST /api/ops/deleteProject", { status: 409, json: { error: { code: "project_in_use", message: "Project still has memories" } } });
+    expect(await store.getState().deleteProject(id)).toBe(false);
+    expect(store.getState().error).toMatch(/still has memories or waiting proposals/);
+  });
+
+  it("fileUnsorted posts the ids and resolves what was filed", async () => {
+    const { store, fake } = await setup();
+    const filed = await store.getState().fileUnsorted(["m1"]);
+    expect(filed).toEqual([]);
+    expect(fake.calls.at(-1)).toMatchObject({ path: "/api/ops/fileUnsorted", body: { ids: ["m1"] } });
+  });
+});

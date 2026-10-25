@@ -2,7 +2,7 @@ import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { Badge, Button, EmptyState } from "lojee-ui";
 import { diffPending, listPendingRelations, pendingChanges, pendingCount, timeline } from "../../domain";
-import { collectionLabel, FieldDiff } from "../../components/FieldDiff";
+import { collectionLabel, FieldDiff, projectLabel } from "../../components/FieldDiff";
 import { InlineError } from "../../components/InlineError";
 import { OriginBadge } from "../../components/OriginBadge";
 import { PageHeader } from "../../components/PageHeader";
@@ -41,6 +41,7 @@ function InboxSection() {
     setBulkError(r.error);
     setNotice(r.notice);
   };
+  const unconfirmed = Object.values(state.projects).filter((p) => !p.confirmed).length;
   const total = pendingCount(state);
   const count = `${total} ${total === 1 ? "change" : "changes"}`;
 
@@ -64,6 +65,19 @@ function InboxSection() {
           </span>
         )}
       </div>
+      {unconfirmed > 0 && (
+        <p role="status" className="flex flex-wrap items-center gap-2 rounded-lg border border-amber-500/40 px-3 py-2 text-xs text-fg">
+          <Badge variant="soft" color="amber" size="xs">
+            Projects
+          </Badge>
+          <span>
+            {unconfirmed} unconfirmed {unconfirmed === 1 ? "project" : "projects"} —{" "}
+            <Link to="/collections#projects" className="text-accent-400 underline underline-offset-2">
+              review
+            </Link>
+          </span>
+        </p>
+      )}
       <InlineError message={bulkError ?? error} />
       {notice && (
         <p role="status" className="text-xs text-fg-muted">
@@ -83,6 +97,14 @@ function InboxSection() {
             const diff = diffs.get(p.revisionId);
             // Where approving will file the memory (shown for a new memory and for any collection change).
             const target = diff?.fields.find((f) => f.field === "collectionId");
+            // The project the memory is filed under (names, never ids); "(new)" while an agent made it and nobody confirmed it.
+            const projectField = diff?.fields.find((f) => f.field === "projectId");
+            const project =
+              projectField && typeof projectField.after === "string" && Object.hasOwn(state.projects, projectField.after)
+                ? state.projects[projectField.after]
+                : undefined;
+            const isNew = !!project && project.autoCreated && !project.confirmed;
+            const repo = project?.sources.find((s) => s.kind === "repo")?.ref;
             return (
               <li key={p.revisionId} className="space-y-2 rounded-lg border border-border p-3">
                 <div className="flex flex-wrap items-center gap-2">
@@ -118,12 +140,23 @@ function InboxSection() {
                   {p.note ? `${p.note} · ` : ""}
                   {formatDateTime(p.createdAt)}
                 </p>
-                {target && (
-                  <p className="text-xs font-medium text-fg">
-                    {`Collection: ${collectionLabel(state.collections, target.after)}`}
-                  </p>
+                {(projectField || target) && (
+                  <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs font-medium text-fg">
+                    {projectField && (
+                      <span className="flex flex-wrap items-center gap-1.5">
+                        {`Project: ${projectLabel(state.projects, projectField.after)}${isNew ? " (new)" : ""}`}
+                        {isNew && (
+                          <Badge variant="soft" size="xs" color="amber">
+                            {`new project, created by ${project.createdBy}`}
+                          </Badge>
+                        )}
+                        {repo && <span className="font-normal text-fg-muted">{`Repository: ${repo}`}</span>}
+                      </span>
+                    )}
+                    {target && <span>{`Collection: ${collectionLabel(state.collections, target.after)}`}</span>}
+                  </div>
                 )}
-                <FieldDiff changes={diff?.fields ?? []} collections={state.collections} />
+                <FieldDiff changes={diff?.fields ?? []} collections={state.collections} projects={state.projects} />
               </li>
             );
           })}

@@ -37,7 +37,7 @@ describe("RemoteRepository reads", () => {
 
   it("export() returns the server's export text", async () => {
     const { repo } = setup();
-    expect(JSON.parse(await repo.export())).toMatchObject({ schemaVersion: 2 });
+    expect(JSON.parse(await repo.export())).toMatchObject({ schemaVersion: 3 });
   });
 
   it("save() is a no-op that makes no request", async () => {
@@ -231,5 +231,58 @@ describe("RemoteRepository session token", () => {
     const repo = new RemoteRepository({ baseUrl: BASE, getToken: () => null, fetch: fake.fetch });
     await expect(repo.load()).rejects.toMatchObject({ kind: "unauthorized" });
     expect(fake.calls).toHaveLength(0);
+  });
+});
+
+describe("RemoteRepository project ops", () => {
+  it("createProject / renameProject / confirmProject / deleteProject POST the args without an actor and adopt the server state", async () => {
+    const { fake, repo } = setup();
+    const made = await repo.createProject({ name: "Acme", repo: "https://github.com/acme/app", actor: user });
+    expect(fake.calls.at(-1)).toMatchObject({ method: "POST", path: "/api/ops/createProject", body: { name: "Acme", repo: "https://github.com/acme/app" } });
+    expect(fake.calls.at(-1)!.body).not.toHaveProperty("actor");
+    expect(made.value).toMatchObject({ name: "Acme", confirmed: true });
+    expect(Object.keys(made.state.projects)).toEqual([made.value.id]);
+    const id = made.value.id;
+    expect((await repo.renameProject({ id, name: "Acme 2", actor: user })).value.name).toBe("Acme 2");
+    expect((await repo.confirmProject({ id, actor: user })).value.id).toBe(id);
+    const del = await repo.deleteProject({ id, actor: user });
+    expect(del.state.projects).toEqual({});
+    expect(fake.calls.at(-1)).toMatchObject({ path: "/api/ops/deleteProject", body: { id } });
+  });
+
+  it("maps project_not_found, duplicate_project and project_in_use to DomainError codes", async () => {
+    const { fake, repo } = setup();
+    await expect(repo.confirmProject({ id: "prj_x", actor: user })).rejects.toMatchObject({ code: "project_not_found" });
+    const a = await repo.createProject({ name: "Acme", actor: user });
+    await expect(repo.createProject({ name: "acme", actor: user })).rejects.toMatchObject({ code: "duplicate_project" });
+    fake.on("POST /api/ops/deleteProject", { status: 409, json: { error: { code: "project_in_use", message: "Project still has memories" } } });
+    await expect(repo.deleteProject({ id: a.value.id, actor: user })).rejects.toMatchObject({ code: "project_in_use" });
+  });
+
+  it("sends project / projectId on createMemory and updateMemory unchanged", async () => {
+    const { fake, repo } = setup();
+    await repo.createMemory({ title: "T", project: { name: "Acme" }, actor: user });
+    expect(fake.calls.at(-1)!.body).toEqual({ title: "T", project: { name: "Acme" } });
+    await repo.updateMemory({ id: "m", patch: { projectId: null }, actor: user });
+    expect(fake.calls.at(-1)!.body).toEqual({ id: "m", patch: { projectId: null } });
+  });
+
+  it("fileUnsorted sends ids only when given; agents are refused client-side for every project op", async () => {
+    const { fake, repo } = setup();
+    await repo.fileUnsorted({ actor: user });
+    expect(fake.calls.at(-1)).toMatchObject({ path: "/api/ops/fileUnsorted", body: {}, rawBody: "{}" });
+    await repo.fileUnsorted({ ids: ["a"], actor: user });
+    expect(fake.calls.at(-1)!.body).toEqual({ ids: ["a"] });
+    const n = fake.calls.length;
+    for (const p of [
+      repo.createProject({ name: "x", actor: agent }),
+      repo.confirmProject({ id: "x", actor: agent }),
+      repo.renameProject({ id: "x", name: "y", actor: agent }),
+      repo.deleteProject({ id: "x", actor: agent }),
+      repo.fileUnsorted({ actor: agent }),
+    ]) {
+      await expect(p).rejects.toMatchObject({ code: "forbidden" });
+    }
+    expect(fake.calls).toHaveLength(n);
   });
 });

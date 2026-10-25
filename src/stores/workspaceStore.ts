@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import {
+  DomainError,
   listMemories,
   listPendingRelations,
   pendingChanges,
@@ -10,6 +11,8 @@ import {
   type Memory,
   type PendingChange,
   type PendingRelation,
+  type Project,
+  type Reassignment,
   type RelationProvenance,
   type Revision,
   type WorkspaceState,
@@ -20,6 +23,18 @@ import { RemoteRepository } from "../data/remoteRepository";
 import type { LoadIssue, MemoryRepository } from "../data/repository";
 
 export const LOCAL_AUTHOR = "local-user";
+
+/** Plain-language text for the project error codes (the server's own message is kept for every other code). */
+const PROJECT_ERRORS: Record<string, string> = {
+  project_not_found: "That project no longer exists. It may have been deleted elsewhere.",
+  duplicate_project: "A project with that name already exists. Choose a different name.",
+  project_in_use: "This project still has memories or waiting proposals, so it cannot be deleted. Move them to another project first.",
+};
+
+export function errorMessage(e: unknown): string {
+  if (e instanceof DomainError && PROJECT_ERRORS[e.code]) return PROJECT_ERRORS[e.code];
+  return e instanceof Error ? e.message : String(e);
+}
 
 /**
  * Optional selection for approveAll / rejectAll so the UI acts on exactly what the user saw. Omitted list =
@@ -95,6 +110,13 @@ export interface WorkspaceStore {
   createCollection(name: string, description?: string): Promise<void>;
   updateCollection(id: string, patch: { name?: string; description?: string }): Promise<void>;
   deleteCollection(id: string): Promise<void>;
+  /** Projects (always as the user; errors land in `error`). */
+  createProject(input: { name: string; repo?: string; workspace?: string }): Promise<Project | undefined>;
+  confirmProject(id: string): Promise<boolean>;
+  renameProject(id: string, name: string): Promise<boolean>;
+  deleteProject(id: string): Promise<boolean>;
+  /** Files Unsorted memories (default: all suggestions) into their matching project; resolves what was filed (undefined on error). */
+  fileUnsorted(ids?: string[]): Promise<Reassignment[] | undefined>;
   /** Review decisions (always as the user). Resolve true on success. */
   approve(revisionId: string): Promise<boolean>;
   reject(revisionId: string): Promise<boolean>;
@@ -121,7 +143,7 @@ export function createWorkspaceStore(initialRepo: MemoryRepository) {
       set({ state, persistError, loadIssue, error: null, remoteRev: revNow() });
     };
     const revNow = () => (repo instanceof RemoteRepository ? repo.getRev() : null);
-    const fail = (e: unknown) => set({ error: e instanceof Error ? e.message : String(e) });
+    const fail = (e: unknown) => set({ error: errorMessage(e) });
     /** Runs a repository mutation, syncs state, returns its value (undefined on error). */
     async function run<T>(fn: () => Promise<Mutation<T>>): Promise<T | undefined> {
       try {
@@ -266,6 +288,19 @@ export function createWorkspaceStore(initialRepo: MemoryRepository) {
         void (await run(() => repo.createCollection({ name, description }))),
       updateCollection: async (id, patch) => void (await run(() => repo.updateCollection({ id, ...patch }))),
       deleteCollection: async (id) => void (await run(() => repo.deleteCollection({ id }))),
+      createProject: (input) => run(() => repo.createProject({ ...input, actor: userActor() })),
+      confirmProject: (id) => succeeded(() => repo.confirmProject({ id, actor: userActor() })),
+      renameProject: (id, name) => succeeded(() => repo.renameProject({ id, name, actor: userActor() })),
+      deleteProject: async (id) => {
+        try {
+          sync((await repo.deleteProject({ id, actor: userActor() })).state);
+          return true;
+        } catch (e) {
+          fail(e);
+          return false;
+        }
+      },
+      fileUnsorted: (ids) => run(() => repo.fileUnsorted({ ids, actor: userActor() })),
       approve: (revisionId) => succeeded(() => repo.approve({ revisionId, actor: userActor() })),
       reject: (revisionId) => succeeded(() => repo.reject({ revisionId, actor: userActor() })),
       approveRelation: (relationId) => succeeded(() => repo.approveRelation({ relationId, actor: userActor() })),

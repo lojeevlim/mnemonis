@@ -30,7 +30,7 @@ function Section({ title, count, children }: { title: string; count?: number; ch
   );
 }
 
-/** Projects present among the shown nodes, sorted by display name. Name: the hub's title, else the first member's prefix, else the key. */
+/** Projects present among the shown nodes, sorted by display name. Name: the real Project's name, else the hub's title, else the first member's prefix, else the key. */
 function legendProjects(nodes: GraphNode[]): { key: string; name: string; count: number }[] {
   const groups = new Map<string, GraphNode[]>();
   for (const n of nodes) if (n.project !== null) {
@@ -42,7 +42,7 @@ function legendProjects(nodes: GraphNode[]): { key: string; name: string; count:
     .map(([key, members]) => {
       const hub = members.find((n) => n.isProject && n.project === key && (n.virtual || n.title.trim().toLowerCase().replace(/\s+/g, " ") === key));
       const first = members.find((n) => !n.virtual && parseTitlePrefix(n.title) !== null);
-      const name = hub?.title ?? (first ? parseTitlePrefix(first.title)!.trim().replace(/\s+/g, " ") : key);
+      const name = members.find((n) => n.projectName)?.projectName ?? hub?.title ?? (first ? parseTitlePrefix(first.title)!.trim().replace(/\s+/g, " ") : key);
       return { key, name, count: members.filter((n) => !n.virtual).length };
     })
     .sort((a, b) => a.name.localeCompare(b.name) || (a.key < b.key ? -1 : 1));

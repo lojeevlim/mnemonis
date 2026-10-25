@@ -15,6 +15,7 @@ import { assertActor, assertIdentityLimits, assertWithinLimits } from "./limits"
 import { assertNotBothCollectionFields } from "./collectionDefault";
 import { assertNotBothProjectFields, confirmProjectIn, getProject, pruneEmptyAutoProjects, resolvePlacement, type ProjectInput } from "./projects";
 import { autoRelate } from "./titlePrefix";
+import { autoFileOwnMemories } from "./unsorted";
 import { autoRelateTopics } from "./topicLinks";
 import { describeChange } from "./versioning";
 import { assertSafeId, cloneJson, deepEqual, freshId, normalizeTags, requireText, safeGet } from "./util";
@@ -180,14 +181,19 @@ export function createMemory(
   assertIdentityLimits(identity);
   const withIdentity: WorkspaceState = { ...state, memories: { ...state.memories, [id]: identity } };
   const { state: appended } = appendRevision(withIdentity, ctx, { memoryId: id, snapshot, actor: input.actor });
-  const next = autoRelateTopics(autoRelate(appended, ctx, input.actor, id, { onlyDrop: projectId !== null }), ctx, input.actor, id);
+  let next = autoRelateTopics(autoRelate(appended, ctx, input.actor, id, { onlyDrop: projectId !== null }), ctx, input.actor, id);
+  // A user's own memory whose title names exactly one project (and where the user chose neither) is filed there.
+  const automatic = input.projectId === undefined && input.project === undefined && input.collectionId === undefined && input.collection === undefined;
+  if (input.actor.kind === "user" && automatic && (input.provenance === undefined || input.provenance.origin === "user")) {
+    next = autoFileOwnMemories(next, ctx, { actor: input.actor, only: [id] }).state;
+  }
   return { state: next, value: view(next, id) };
 }
 
 export function updateMemory(
   state: WorkspaceState,
   ctx: DomainContext,
-  args: { id: string; patch: MemoryPatch; actor: Actor },
+  args: { id: string; patch: MemoryPatch; actor: Actor; note?: string },
 ): Mutation<Memory> {
   assertActor(args.actor);
   const before = baseSnapshot(state, args.id, args.actor);
@@ -224,11 +230,16 @@ export function updateMemory(
   };
   checkCollection(state, snapshot.collectionId);
   checkProject(state, snapshot.projectId);
-  const { state: appended } = appendRevision(state, ctx, { memoryId: args.id, snapshot, actor: args.actor });
+  const { state: appended } = appendRevision(state, ctx, { memoryId: args.id, snapshot, actor: args.actor, note: args.note });
   const titleChanged = snapshot.title !== before.title;
   const tagsChanged = !deepEqual(snapshot.tags, before.tags);
   let next = titleChanged ? autoRelate(appended, ctx, args.actor, args.id, { onlyDrop: snapshot.projectId !== null }) : appended;
   if (titleChanged || tagsChanged) next = autoRelateTopics(next, ctx, args.actor, args.id);
+  // The user retitled / moved a memory without choosing a project: it may now match exactly one project.
+  const placed = patch.projectId !== undefined || args.patch.project !== undefined;
+  if (args.actor.kind === "user" && !placed && (titleChanged || snapshot.collectionId !== before.collectionId)) {
+    next = autoFileOwnMemories(next, ctx, { actor: args.actor, only: [args.id] }).state;
+  }
   return { state: next, value: view(next, args.id) };
 }
 

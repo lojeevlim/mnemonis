@@ -4,6 +4,7 @@ import { assertActor, LIMITS } from "./limits";
 import { listMemories } from "./queries";
 import { assertCollectionRoom, createCollection } from "./relations";
 import { normalizeTitle, parseTitlePrefix } from "./titlePrefix";
+import { autoFileOwnMemories } from "./unsorted";
 import type {
   Actor,
   Collection,
@@ -333,11 +334,20 @@ export function createProject(
   if (args.actor.kind === "user") {
     // A user naming a project an agent made (still unconfirmed) takes it over: same id, now confirmed.
     const existing = findProjectByKey(state, checked.key);
-    if (existing && existing.autoCreated && !existing.confirmed) return takeOver(state, existing, checked);
+    if (existing && existing.autoCreated && !existing.confirmed) {
+      const t = takeOver(state, existing, checked);
+      return { state: autoFileOwnMemories(t.state, ctx, { actor: args.actor }).state, value: t.value };
+    }
   }
   const r = insertProject(state, ctx, checked, args.actor);
-  return { state: r.state, value: r.project };
+  // A new project may be the unique match of memories the user already wrote: they are filed into it.
+  const filed = args.actor.kind === "user" ? autoFileOwnMemories(r.state, ctx, { actor: args.actor }).state : r.state;
+  return { state: filed, value: r.project };
 }
+
+/** Files the user's own memories into the (now) matching project; a no-op without a context. */
+const fileOwn = (state: WorkspaceState, ctx: DomainContext | undefined, actor: Actor): WorkspaceState =>
+  ctx ? autoFileOwnMemories(state, ctx, { actor }).state : state;
 
 /** Confirms `p` (adopting a same-named folder when it has none) and adds the repo / workspace the user supplied. */
 function takeOver(state: WorkspaceState, p: Project, c: CheckedInput): Mutation<Project> {
@@ -357,13 +367,13 @@ function requireUser(actor: Actor): void {
 }
 
 /** User only, idempotent: marks a project as reviewed (an agent-created project stops counting against the cap). */
-export function confirmProject(state: WorkspaceState, args: { id: string; actor: Actor }): Mutation<Project> {
+export function confirmProject(state: WorkspaceState, args: { id: string; actor: Actor }, ctx?: DomainContext): Mutation<Project> {
   requireUser(args.actor);
   const p = getProject(state, args.id);
   if (!p) throw new DomainError("project_not_found", `Project not found: ${args.id}`);
-  if (p.confirmed && (collectionOf(state, p) || !adoptableCollection(state, p.key))) return { state, value: p };
+  if (p.confirmed && (collectionOf(state, p) || !adoptableCollection(state, p.key))) return { state: fileOwn(state, ctx, args.actor), value: p };
   const r = confirmAndAdopt(state, p);
-  return { state: r.state, value: r.project };
+  return { state: fileOwn(r.state, ctx, args.actor), value: r.project };
 }
 
 /** The project's own folder: it exists and points back at the project. */
@@ -390,7 +400,7 @@ function confirmAndAdopt(state: WorkspaceState, p: Project): { state: WorkspaceS
  * User only. Renames a project: id and collection link stay, the old key becomes an alias (so lookups by the old
  * name still resolve). The new name must not collide with another project's key or alias.
  */
-export function renameProject(state: WorkspaceState, args: { id: string; name: string; actor: Actor }): Mutation<Project> {
+export function renameProject(state: WorkspaceState, args: { id: string; name: string; actor: Actor }, ctx?: DomainContext): Mutation<Project> {
   requireUser(args.actor);
   const p = getProject(state, args.id);
   if (!p) throw new DomainError("project_not_found", `Project not found: ${args.id}`);
@@ -402,7 +412,7 @@ export function renameProject(state: WorkspaceState, args: { id: string; name: s
   if (key !== p.key && !aliases.includes(p.key)) aliases.push(p.key);
   if (aliases.length > LIMITS.maxProjectAliases) throw tooLarge(`Too many project aliases (max ${LIMITS.maxProjectAliases})`);
   const next: Project = { ...p, name, key, aliases, confirmed: true };
-  return { state: { ...state, projects: { ...state.projects, [p.id]: next } }, value: next };
+  return { state: fileOwn({ ...state, projects: { ...state.projects, [p.id]: next } }, ctx, args.actor), value: next };
 }
 
 /** Confirms `projectId` (if it exists and is unconfirmed); returns the same state otherwise. Used when a user saves / approves. */

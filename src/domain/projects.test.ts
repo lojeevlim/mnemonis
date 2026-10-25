@@ -493,9 +493,11 @@ describe("pending semantics", () => {
 describe("update and rollback", () => {
   it("update never re-defaults the project or collection", () => {
     const { ctx, state } = setup();
-    const a = createMemory(state, ctx, { title: "Plain", actor: USER });
+    // Agent-written (so createProject does not file it automatically, see unsorted.test.ts) and edited without a placement.
+    const made = createMemory(state, ctx, { title: "Plain", actor: AGENT });
+    const a = { state: approveRevision(made.state, ctx, { revisionId: made.value.revisionId, actor: USER }).state, value: made.value };
     const b = createProject(a.state, ctx, { name: "Plain", actor: USER });
-    const u = updateMemory(b.state, ctx, { id: a.value.id, patch: { title: "Plain: renamed", content: "x" }, actor: USER });
+    const u = updateMemory(b.state, ctx, { id: a.value.id, patch: { content: "x" }, actor: USER });
     expect(u.value.projectId).toBeNull();
     expect(u.value.collectionId).toBe(a.value.collectionId);
   });

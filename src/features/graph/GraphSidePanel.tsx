@@ -1,7 +1,22 @@
+import { useMemo } from "react";
 import { Badge, Button } from "lojee-ui";
-import { typeLabel } from "../../components/memoryMeta";
+import { parseTitlePrefix } from "../../domain/titlePrefix";
 import type { GraphEdge, GraphNode } from "./graphModel";
-import { AMBER, typeColor } from "./graphStyle";
+import { AMBER, NEUTRAL, accentFill, type ProjectAccent } from "./graphStyle";
+
+/** Colour dot for a node's project (neutral when it has none). `data-accent` scopes the accent variable to the dot. */
+function ProjectDot({ project, accents, size = "size-2" }: { project: string | null; accents: ReadonlyMap<string, ProjectAccent>; size?: string }) {
+  const a = project === null ? undefined : accents.get(project);
+  return (
+    <span
+      aria-hidden="true"
+      data-accent={a?.accent}
+      data-project-dot={project ?? ""}
+      className={`${size} shrink-0 rounded-full`}
+      style={{ background: a ? accentFill(a.shade) : NEUTRAL }}
+    />
+  );
+}
 
 function Section({ title, count, children }: { title: string; count?: number; children: React.ReactNode }) {
   return (
@@ -15,12 +30,39 @@ function Section({ title, count, children }: { title: string; count?: number; ch
   );
 }
 
+/** Projects present among the shown nodes, sorted by display name. Name: the hub's title, else the first member's prefix, else the key. */
+function legendProjects(nodes: GraphNode[]): { key: string; name: string; count: number }[] {
+  const groups = new Map<string, GraphNode[]>();
+  for (const n of nodes) if (n.project !== null) {
+    const g = groups.get(n.project);
+    if (g) g.push(n);
+    else groups.set(n.project, [n]);
+  }
+  return [...groups.entries()]
+    .map(([key, members]) => {
+      const hub = members.find((n) => n.isProject && n.project === key && (n.virtual || n.title.trim().toLowerCase().replace(/\s+/g, " ") === key));
+      const first = members.find((n) => !n.virtual && parseTitlePrefix(n.title) !== null);
+      const name = hub?.title ?? (first ? parseTitlePrefix(first.title)!.trim().replace(/\s+/g, " ") : key);
+      return { key, name, count: members.filter((n) => !n.virtual).length };
+    })
+    .sort((a, b) => a.name.localeCompare(b.name) || (a.key < b.key ? -1 : 1));
+}
+
+const NO_ACCENTS: ReadonlyMap<string, ProjectAccent> = new Map();
+
 interface Props {
   nodes: GraphNode[];
+  /** Project key -> accent (computed from the unfiltered graph). */
+  projectAccents?: ReadonlyMap<string, ProjectAccent>;
   clusters: string[][];
   activeClusterIndex: number | null;
   isolated: GraphNode[];
   selectedEdge: { edge: GraphEdge; sourceTitle: string; targetTitle: string } | null;
+  /** Selected virtual project hub and its member memories. */
+  selectedHub?: { hub: GraphNode; members: GraphNode[] } | null;
+  creatingHub?: boolean;
+  hubNotice?: string | null;
+  onCreateHub?: (hub: GraphNode) => void;
   onFocusCluster: (index: number) => void;
   onOpenMemory: (id: string) => void;
   onRemoveEdge: (id: string) => void;
@@ -28,19 +70,60 @@ interface Props {
 
 export function GraphSidePanel({
   nodes,
+  projectAccents = NO_ACCENTS,
   clusters,
   activeClusterIndex,
   isolated,
   selectedEdge,
+  selectedHub = null,
+  creatingHub = false,
+  hubNotice = null,
+  onCreateHub,
   onFocusCluster,
   onOpenMemory,
   onRemoveEdge,
 }: Props) {
   const byId = new Map(nodes.map((n) => [n.id, n]));
-  const types = [...new Set(nodes.map((n) => n.type))].sort();
+  const projects = useMemo(() => legendProjects(nodes), [nodes]);
+  const unassigned = useMemo(() => nodes.filter((n) => n.project === null).length, [nodes]);
 
   return (
     <aside aria-label="Graph details" className="space-y-4 text-sm">
+      {selectedHub && (
+        <Section title="Selected project">
+          <div className="space-y-2 rounded-lg border border-border bg-surface-muted p-2" data-testid="selected-hub">
+            <p className="text-fg">
+              <span className="font-medium">Project {selectedHub.hub.title}</span> · {selectedHub.members.length}{" "}
+              {selectedHub.members.length === 1 ? "memory" : "memories"} · no memory titled {selectedHub.hub.title} yet
+            </p>
+            <ul className="space-y-1" aria-label="Project memories">
+              {selectedHub.members.map((m) => (
+                <li key={m.id}>
+                  <button
+                    type="button"
+                    onClick={() => onOpenMemory(m.id)}
+                    className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-xs text-fg hover:bg-surface-raised focus-visible:outline-2"
+                  >
+                    <ProjectDot project={m.project} accents={projectAccents} />
+                    <span className="min-w-0 truncate">{m.title}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+            {onCreateHub && (
+              <Button size="xs" variant="outline" icon="plus" disabled={creatingHub} onClick={() => onCreateHub(selectedHub.hub)}>
+                {`Create '${selectedHub.hub.title}' memory`}
+              </Button>
+            )}
+            {hubNotice && (
+              <p role="status" className="text-xs text-fg-muted">
+                {hubNotice}
+              </p>
+            )}
+          </div>
+        </Section>
+      )}
+
       {selectedEdge && (
         <Section title="Selected relation">
           <div className="space-y-2 rounded-lg border border-border bg-surface-muted p-2" data-testid="selected-edge">
@@ -55,15 +138,24 @@ export function GraphSidePanel({
               <Badge variant="outline" size="xs">
                 {selectedEdge.edge.origin}
               </Badge>
+              {selectedEdge.edge.derived && (
+                <Badge variant="outline" size="xs">
+                  Derived
+                </Badge>
+              )}
               {selectedEdge.edge.demo && (
                 <Badge variant="outline" size="xs" color="violet">
                   Demo
                 </Badge>
               )}
             </div>
-            <Button size="xs" variant="outline" icon="trash-2" onClick={() => onRemoveEdge(selectedEdge.edge.id)}>
-              Remove relation
-            </Button>
+            {selectedEdge.edge.derived ? (
+              <p className="text-xs text-fg-muted">Derived from title prefix. It is not stored, so there is nothing to remove.</p>
+            ) : (
+              <Button size="xs" variant="outline" icon="trash-2" onClick={() => onRemoveEdge(selectedEdge.edge.id)}>
+                Remove relation
+              </Button>
+            )}
           </div>
         </Section>
       )}
@@ -92,7 +184,7 @@ export function GraphSidePanel({
                     }`}
                   >
                     <span className="block text-xs font-medium text-fg">
-                      Cluster {i + 1} · {ids.length} memories
+                      Cluster {i + 1} · {ids.filter((id) => !byId.get(id)?.virtual).length} memories
                     </span>
                     <span className="block truncate text-xs text-fg-muted">{top.join(", ")}</span>
                   </button>
@@ -115,7 +207,7 @@ export function GraphSidePanel({
                   onClick={() => onOpenMemory(n.id)}
                   className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-xs text-fg hover:bg-surface-muted focus-visible:outline-2"
                 >
-                  <span aria-hidden="true" className="size-2 shrink-0 rounded-full" style={{ background: typeColor(n.type) }} />
+                  <ProjectDot project={n.project} accents={projectAccents} />
                   <span className="min-w-0 truncate">{n.title}</span>
                 </button>
               </li>
@@ -126,12 +218,20 @@ export function GraphSidePanel({
 
       <Section title="Legend">
         <ul className="space-y-1 text-xs text-fg-muted" aria-label="Legend">
-          {types.map((t) => (
-            <li key={t} className="flex items-center gap-2">
-              <span aria-hidden="true" className="size-2.5 rounded-full" style={{ background: typeColor(t) }} />
-              {typeLabel(t)}
+          {projects.map((p) => (
+            <li key={p.key} className="flex items-center gap-2" data-legend-project={p.key}>
+              <ProjectDot project={p.key} accents={projectAccents} size="size-2.5" />
+              <span className="min-w-0 truncate">{p.name}</span>
+              <span className="ml-auto shrink-0">{p.count}</span>
             </li>
           ))}
+          {unassigned > 0 && (
+            <li className="flex items-center gap-2" data-legend-project="">
+              <ProjectDot project={null} accents={projectAccents} size="size-2.5" />
+              <span className="min-w-0 truncate">No project</span>
+              <span className="ml-auto shrink-0">{unassigned}</span>
+            </li>
+          )}
           <li className="flex items-center gap-2">
             <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
               <circle cx="7" cy="7" r="4" fill="var(--color-fg-subtle)" />
@@ -146,6 +246,14 @@ export function GraphSidePanel({
             Archived (dashed, dim)
           </li>
           <li>Node size grows with the number of relations.</li>
+          <li>Big circle: a project, with its &ldquo;&lt;project&gt;: ...&rdquo; memories around it (dashed line: derived from the title).</li>
+          <li className="flex items-center gap-2">
+            <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true">
+              <circle cx="7" cy="7" r="4" fill="var(--color-fg-subtle)" fillOpacity="0.6" />
+              <circle cx="7" cy="7" r="6" fill="none" stroke="var(--color-fg-subtle)" strokeWidth="1.5" strokeDasharray="3 2" />
+            </svg>
+            Dashed big circle: a project found in a &ldquo;&lt;project&gt;: ...&rdquo; title that has no memory of that name yet.
+          </li>
         </ul>
       </Section>
     </aside>

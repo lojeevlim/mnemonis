@@ -1,6 +1,14 @@
 import { describe, expect, it } from "vitest";
 import { createSeedWorkspace } from "../../data/seed";
-import { archiveMemory, createSequentialContext, listRelations } from "../../domain";
+import {
+  archiveMemory,
+  createEmptyWorkspace,
+  createMemory,
+  addRelation,
+  createSequentialContext,
+  listRelations,
+  type WorkspaceState,
+} from "../../domain";
 import {
   buildGraph,
   clusters,
@@ -23,6 +31,9 @@ const node = (id: string, extra: Partial<GraphNode> = {}): GraphNode => ({
   collectionId: null,
   tags: [],
   degree: 0,
+  childCount: 0,
+  isProject: false,
+  project: null,
   ...extra,
 });
 const edge = (source: string, target: string): GraphEdge => ({
@@ -34,11 +45,14 @@ const edge = (source: string, target: string): GraphEdge => ({
   demo: false,
 });
 
+/** The graph without view-only items: real memories and stored relations. */
+const storedOnly = (g: Graph): Graph => ({ nodes: g.nodes.filter((n) => !n.virtual), edges: g.edges.filter((e) => !e.derived) });
+
 describe("buildGraph (seed)", () => {
   const state = createSeedWorkspace();
 
   it("builds nodes from saved memories and edges only from stored relations", () => {
-    const g = buildGraph(state);
+    const g = storedOnly(buildGraph(state));
     expect(g.nodes).toHaveLength(18);
     expect(g.nodes.some((n) => n.id === "mem_research_ranking")).toBe(false); // only a pending proposal in the Inbox: not saved, so not in the graph
     expect(g.edges).toHaveLength(listRelations(state).length);
@@ -52,15 +66,22 @@ describe("buildGraph (seed)", () => {
 
   it("computes degree and isolated memories", () => {
     const g = buildGraph(state);
-    expect(g.nodes.find((n) => n.id === "mem_proj_mnemonis")!.degree).toBe(7);
+    expect(g.nodes.find((n) => n.id === "mem_proj_mnemonis")!.degree).toBe(8); // 7 stored + 1 derived edge to the "Project" hub
     expect(isolatedNodes(g.nodes).map((n) => n.id).sort()).toEqual(["mem_pref_writing", "mem_profile"]);
   });
 
   it("finds one big cluster and two singletons", () => {
-    const g = buildGraph(state);
+    const g = storedOnly(buildGraph(state));
     const comps = connectedComponents(g.nodes, g.edges);
     expect(comps.map((c) => c.length)).toEqual([16, 1, 1]);
     expect(clusters(g.nodes, g.edges)).toHaveLength(1);
+  });
+
+  it("draws a virtual hub for each repeated generic prefix (Decision:, Meeting:, ...)", () => {
+    const g = buildGraph(state);
+    const hubs = g.nodes.filter((n) => n.virtual).map((n) => `${n.title}:${n.childCount}`);
+    expect(hubs.sort()).toEqual(["Decision:3", "Meeting:2", "Procedure:2", "Project:1", "Reference:1", "Research:2", "Task:2"]);
+    expect(g.edges.filter((e) => e.derived)).toHaveLength(13);
   });
 
   it("hides archived memories (and their edges) unless toggled", () => {
@@ -68,10 +89,10 @@ describe("buildGraph (seed)", () => {
     const base = createSequentialContext("2026-10-01T00:00:00.000Z");
     const ctx = { now: base.now, newId: (prefix: string) => `test_${base.newId(prefix)}` };
     const archived = archiveMemory(state, ctx, { id: "mem_dec_zustand", actor: { kind: "user", name: "t" } }).state;
-    const hidden = buildGraph(archived);
+    const hidden = storedOnly(buildGraph(archived));
     expect(hidden.nodes.some((n) => n.id === "mem_dec_zustand")).toBe(false);
     expect(hidden.edges).toHaveLength(14); // two relations touched it
-    const shown = buildGraph(archived, { showArchived: true });
+    const shown = storedOnly(buildGraph(archived, { showArchived: true }));
     const n = shown.nodes.find((x) => x.id === "mem_dec_zustand")!;
     expect(n.archived).toBe(true);
     expect(shown.edges).toHaveLength(16);
@@ -121,5 +142,311 @@ describe("pure helpers", () => {
     expect(searchNodes(nodes, "postgres")).toEqual(["2", "1", "3"]);
     expect(searchNodes(nodes, "  ")).toEqual([]);
     expect(searchNodes(nodes, "nothing")).toEqual([]);
+  });
+});
+
+describe("title-prefix edges", () => {
+  const actor = { kind: "user", name: "t" } as const;
+  const ctx = createSequentialContext("2026-10-01T00:00:00.000Z");
+  const make = (state: WorkspaceState, id: string, title: string) =>
+    createMemory(state, ctx, { id, title, content: "x", actor }).state;
+  /** Memories only; the stored auto-relations are dropped to mimic memories saved before the feature. */
+  const unlinked = (titles: [string, string][]): WorkspaceState => {
+    let s = createEmptyWorkspace();
+    for (const [id, title] of titles) s = make(s, id, title);
+    return { ...s, relations: {} };
+  };
+  const base: [string, string][] = [
+    ["p", "VT"],
+    ["c1", "VT: run build"],
+    ["c2", "vt : deploy"],
+    ["o", "Other"],
+  ];
+
+  it("derives child -> project edges (case-insensitive) when nothing is stored", () => {
+    const g = buildGraph(unlinked(base));
+    expect(g.edges.map((e) => e.id)).toEqual(["prefix:c1:p", "prefix:c2:p"]);
+    expect(g.edges[0]).toMatchObject({ source: "c1", target: "p", label: "part of", origin: "process", derived: true, prefix: true });
+  });
+
+  it("does not duplicate a pair that already has a stored relation", () => {
+    const stored = buildGraph(make(unlinked(base), "c3", "VT: docs")); // autoRelate stores c3 -> p
+    const derived = stored.edges.filter((e) => e.derived).map((e) => e.id);
+    expect(derived).toEqual(["prefix:c1:p", "prefix:c2:p"]);
+    const real = stored.edges.filter((e) => !e.derived);
+    expect(real).toHaveLength(1);
+    expect(real[0]).toMatchObject({ source: "c3", target: "p", prefix: true });
+    expect(stored.nodes.find((n) => n.id === "p")).toMatchObject({ isProject: true, childCount: 3 });
+  });
+
+  it("flags hubs and counts children, degree and components", () => {
+    const g = buildGraph(unlinked(base));
+    expect(g.nodes.find((n) => n.id === "p")).toMatchObject({ isProject: true, childCount: 2, degree: 2 });
+    expect(g.nodes.find((n) => n.id === "c1")).toMatchObject({ isProject: false, childCount: 0, degree: 1 });
+    expect(isolatedNodes(g.nodes).map((n) => n.id)).toEqual(["o"]);
+    expect(connectedComponents(g.nodes, g.edges)).toEqual([["c1", "c2", "p"], ["o"]]);
+    expect(clusters(g.nodes, g.edges)).toHaveLength(1);
+  });
+
+  it("ignores an archived project unless showArchived", () => {
+    const s = unlinked(base);
+    const archived = archiveMemory(s, ctx, { id: "p", actor }).state;
+    const hidden = buildGraph(archived);
+    // The hidden parent no longer counts: its two children form a virtual hub instead.
+    expect(hidden.edges.map((e) => e.id)).toEqual(["prefix:c1:project:vt", "prefix:c2:project:vt"]);
+    expect(hidden.nodes.filter((n) => n.isProject).map((n) => n.id)).toEqual(["project:vt"]);
+    const shown = buildGraph(archived, { showArchived: true });
+    expect(shown.edges.map((e) => e.id)).toEqual(["prefix:c1:p", "prefix:c2:p"]);
+    expect(shown.nodes.find((n) => n.id === "p")!.isProject).toBe(true);
+    expect(shown.nodes.some((n) => n.virtual)).toBe(false);
+  });
+
+  it("keeps derived edges consistent with filterGraph", () => {
+    const g = buildGraph(unlinked(base));
+    expect(filterGraph(g, { type: "nope" })).toEqual({ nodes: [], edges: [] });
+    const f = filterGraph({ nodes: g.nodes.map((n) => (n.id === "c2" ? { ...n, tags: ["k"] } : n)), edges: g.edges }, { tag: "k" });
+    expect(f.edges).toEqual([]); // the project is filtered out, so its derived edge goes too
+    expect(filterGraph(g, { type: "fact" }).edges).toHaveLength(2);
+  });
+
+  it("shows a stored topic link as a normal edge, not a prefix edge", () => {
+    let s = createEmptyWorkspace();
+    s = createMemory(s, ctx, { id: "a", title: "A: billing", tags: ["stripe"], actor }).state;
+    s = createMemory(s, ctx, { id: "b", title: "B: checkout", tags: ["stripe"], actor }).state;
+    const g = storedOnly(buildGraph(s));
+    expect(g.edges).toHaveLength(1);
+    expect(g.edges[0]).toMatchObject({ source: "b", target: "a", label: "shares topic: stripe", origin: "process" });
+    expect(g.edges[0].prefix).toBeUndefined();
+    expect(g.edges[0].derived).toBeUndefined();
+    expect(g.nodes.every((n) => !n.virtual && !n.isProject)).toBe(true);
+  });
+
+  it("flags a stored title-prefix relation with prefix: true", () => {
+    const g = buildGraph(make(unlinked(base), "c3", "VT: docs"));
+    expect(g.edges.find((e) => !e.derived)).toMatchObject({ source: "c3", target: "p", prefix: true });
+  });
+
+  it("lets a stored manual part-of link suppress the derived edge without counting as a hub child", () => {
+    const s = unlinked([
+      ["p", "VT"],
+      ["c1", "VT: run build"],
+    ]);
+    const withManual = addRelation(s, ctx, {
+      fromId: "c1",
+      toId: "p",
+      label: "part of",
+      provenance: { origin: "user", createdBy: "t" },
+      actor,
+    }).state;
+    const g = buildGraph(withManual);
+    expect(g.edges).toHaveLength(1);
+    expect(g.edges[0].derived).toBeUndefined();
+    expect(g.edges[0].prefix).toBeUndefined();
+    expect(g.nodes.find((n) => n.id === "p")).toMatchObject({ isProject: false, childCount: 0 });
+  });
+
+  it("derives one edge per same-titled parent", () => {
+    const g = buildGraph(
+      unlinked([
+        ["p1", "VT"],
+        ["p2", "VT"],
+        ["c", "VT: x"],
+      ]),
+    );
+    expect(g.edges.map((e) => e.id)).toEqual(["prefix:c:p1", "prefix:c:p2"]);
+  });
+
+  it("never derives an edge to itself", () => {
+    // The edge goes to the virtual hub, never from a memory to itself.
+    expect(buildGraph(unlinked([["a", "A: A"]])).edges.map((e) => [e.source, e.target])).toEqual([["a", "project:a"]]);
+  });
+
+  it("derives edges from legacy followers of a real parent", () => {
+    const g = buildGraph(unlinked([["p", "VT"], ["l1", "VT run, build, test"], ["l2", "VT project overview"], ["x", "VTX other"]]));
+    expect(g.edges.map((e) => e.id)).toEqual(["prefix:l1:p", "prefix:l2:p"]);
+    expect(g.nodes.some((n) => n.virtual)).toBe(false);
+  });
+});
+
+describe("virtual project hubs", () => {
+  const actor = { kind: "user", name: "t" } as const;
+  const ctx = createSequentialContext("2026-10-01T00:00:00.000Z");
+  const unlinked = (titles: [string, string][]): WorkspaceState => {
+    let s = createEmptyWorkspace();
+    for (const [id, title] of titles) s = createMemory(s, ctx, { id, title, content: "x", actor }).state;
+    return { ...s, relations: {} };
+  };
+  // The user's real workspace: no memory titled "VT".
+  const user: [string, string][] = [
+    ["a", "vt: ticket selling feature flow and gotchas"],
+    ["b", "vt: conductor payout flow (Stripe Connect)"],
+    ["c", "VT run, build, test"],
+    ["d", "VT project overview"],
+    ["e", "VT coding conventions"],
+    ["f", "VT new-developer first steps"],
+  ];
+
+  it("groups the user's six VT memories under one hub named VT", () => {
+    const g = buildGraph(unlinked(user));
+    const hubs = g.nodes.filter((n) => n.virtual);
+    expect(hubs).toHaveLength(1);
+    expect(hubs[0]).toMatchObject({
+      id: "project:vt",
+      title: "VT", // 4 legacy "VT" votes beat 2 colon "vt" votes
+      type: "project",
+      status: "saved",
+      archived: false,
+      collectionId: null,
+      tags: [],
+      isProject: true,
+      virtual: true,
+      childCount: 6,
+      degree: 6,
+    });
+    expect(g.edges.map((e) => e.id)).toEqual(["a", "b", "c", "d", "e", "f"].map((id) => `prefix:${id}:project:vt`));
+    expect(g.edges[0]).toMatchObject({ source: "a", target: "project:vt", label: "part of", origin: "process", derived: true, prefix: true, demo: false });
+    expect(g.nodes).toHaveLength(7);
+    expect(connectedComponents(g.nodes, g.edges)).toEqual([["a", "b", "c", "d", "e", "f", "project:vt"]]);
+    expect(isolatedNodes(g.nodes)).toEqual([]);
+    expect(clusters(g.nodes, g.edges)).toHaveLength(1);
+  });
+
+  it("forms a hub from a single colon child, but not from legacy followers alone", () => {
+    expect(buildGraph(unlinked([["c", "VT run"], ["d", "VT overview"], ["e", "VT notes"]])).nodes.some((n) => n.virtual)).toBe(false);
+    const single = buildGraph(unlinked([["a", "VT: only one"]]));
+    expect(single.nodes.find((n) => n.virtual)).toMatchObject({ id: "project:vt", title: "VT", isProject: true, virtual: true, childCount: 1, degree: 1 });
+    expect(single.edges.map((e) => e.id)).toEqual(["prefix:a:project:vt"]);
+    expect(connectedComponents(single.nodes, single.edges)).toEqual([["a", "project:vt"]]);
+    // One colon child plus one follower makes two members.
+    const g = buildGraph(unlinked([["a", "VT: one"], ["c", "VT overview"]]));
+    expect(g.nodes.filter((n) => n.virtual).map((n) => n.id)).toEqual(["project:vt"]);
+  });
+
+  it("requires a word boundary for legacy followers", () => {
+    const g = buildGraph(unlinked([["a", "VT: one"], ["b", "VT: two"], ["c", "VTX overview"], ["d", "VT-overview"]]));
+    expect(g.edges.map((e) => e.id)).toEqual(["prefix:a:project:vt", "prefix:b:project:vt"]);
+  });
+
+  it("makes no virtual hub when a real parent exists", () => {
+    const g = buildGraph(unlinked([["p", "VT"], ...user]));
+    expect(g.nodes.some((n) => n.virtual)).toBe(false);
+    expect(g.edges.every((e) => e.target === "p" && e.derived)).toBe(true);
+    expect(g.edges).toHaveLength(6);
+    expect(g.nodes.find((n) => n.id === "p")).toMatchObject({ isProject: true, childCount: 6 });
+  });
+
+  it("picks the display name by count, then uppercase, then alphabetical", () => {
+    const name = (titles: string[]) =>
+      buildGraph(unlinked(titles.map((t, i) => [`m${i}`, t] as [string, string]))).nodes.find((n) => n.virtual)!.title;
+    expect(name(["Vt: a", "Vt: b", "VT: c"])).toBe("Vt");
+    expect(name(["vt: a", "VT: b"])).toBe("VT");
+    expect(name(["Vt: a", "vT: b"])).toBe("Vt");
+    expect(name(["vt: a", "vt: b", "VT: c"])).toBe("vt");
+  });
+
+  it("ignores archived members unless showArchived", () => {
+    const s = archiveMemory(unlinked(user), ctx, { id: "c", actor }).state;
+    expect(buildGraph(s).nodes.find((n) => n.virtual)).toMatchObject({ childCount: 5 });
+    expect(buildGraph(s, { showArchived: true }).nodes.find((n) => n.virtual)).toMatchObject({ childCount: 6 });
+    let two = archiveMemory(unlinked(user), ctx, { id: "a", actor }).state;
+    for (const id of ["c", "d", "e", "f"]) two = archiveMemory(two, ctx, { id, actor }).state;
+    expect(buildGraph(two).nodes.find((n) => n.virtual)).toMatchObject({ childCount: 1 }); // one member left, still a hub
+    const none = archiveMemory(two, ctx, { id: "b", actor }).state;
+    expect(buildGraph(none).nodes.some((n) => n.virtual)).toBe(false);
+  });
+
+  it("keeps a hub while a member passes the filters", () => {
+    const g = buildGraph(unlinked(user));
+    const tagged: Graph = { ...g, nodes: g.nodes.map((n) => (n.id === "a" ? { ...n, tags: ["k"] } : n)) };
+    const f = filterGraph(tagged, { tag: "k" });
+    expect(f.nodes.map((n) => n.id).sort()).toEqual(["a", "project:vt"]);
+    expect(f.edges.map((e) => e.id)).toEqual(["prefix:a:project:vt"]);
+    expect(filterGraph(tagged, { tag: "none" }).nodes).toEqual([]);
+    expect(filterGraph(g, { type: "fact" }).nodes).toHaveLength(7);
+    expect(filterGraph(g, { type: "project" }).nodes).toEqual([]); // the hub's own type does not keep it
+  });
+
+  it("does not treat URLs or slash keys as projects", () => {
+    expect(buildGraph(unlinked([["a", "http://a.com"], ["b", "http://b.com"]])).nodes.some((n) => n.virtual)).toBe(false);
+    expect(buildGraph(unlinked([["a", "https://a.com/x"], ["b", "https://b.com/y"], ["c", "https://c.com"]])).edges).toEqual([]);
+    expect(buildGraph(unlinked([["a", "a/b: one"], ["b", "a/b: two"], ["c", "a/b notes"]])).nodes.some((n) => n.virtual)).toBe(false);
+    // A real project still forms next to URL-looking titles.
+    const g = buildGraph(unlinked([["a", "VT: one"], ["b", "VT: two"], ["c", "http://x.com"]]));
+    expect(g.nodes.filter((n) => n.virtual).map((n) => n.id)).toEqual(["project:vt"]);
+  });
+
+  it("derives the display name without assuming toLowerCase keeps the length", () => {
+    const g = buildGraph(unlinked([["a", "İ: one"], ["b", "İ run"], ["c", "İ build"]]));
+    expect(g.nodes.find((n) => n.virtual)).toMatchObject({ title: "İ", childCount: 3 });
+  });
+
+  it("keeps a hub through filterGraph while a member passes", () => {
+    let s = unlinked(user.slice(0, 2));
+    s = createMemory(s, ctx, { id: "t", title: "vt: tagged", content: "x", tags: ["k"], actor }).state;
+    const g = buildGraph({ ...s, relations: {} });
+    const f = filterGraph(g, { tag: "k" });
+    expect(f.nodes.map((n) => n.id).sort()).toEqual(["project:vt", "t"]);
+    expect(f.edges.map((e) => e.id)).toEqual(["prefix:t:project:vt"]);
+  });
+
+  it("is replaced by the real memory (no duplicate hub or edges) once it is created", () => {
+    const colonOnly = unlinked(user.slice(0, 2));
+    expect(buildGraph(colonOnly).nodes.some((n) => n.virtual)).toBe(true);
+    const created = createMemory(colonOnly, ctx, { id: "hub", title: "vt", content: "x", type: "project", actor }).state;
+    const g = buildGraph(created);
+    expect(g.nodes.some((n) => n.virtual)).toBe(false);
+    expect(g.edges.map((e) => e.id).sort()).toEqual(Object.keys(created.relations).sort()); // stored only, nothing derived
+    expect(g.edges.every((e) => e.target === "hub" && !e.derived && e.prefix)).toBe(true);
+    expect(g.nodes.find((n) => n.id === "hub")).toMatchObject({ isProject: true, childCount: 2 });
+  });
+});
+
+describe("node.project", () => {
+  const actor = { kind: "user", name: "t" } as const;
+  const ctx = createSequentialContext("2026-10-01T00:00:00.000Z");
+  const unlinked = (titles: [string, string][], extra: Record<string, { tags: string[] }> = {}): WorkspaceState => {
+    let s = createEmptyWorkspace();
+    for (const [id, title] of titles) s = createMemory(s, ctx, { id, title, content: "x", tags: extra[id]?.tags, actor }).state;
+    return { ...s, relations: {} };
+  };
+  const projectOf = (g: Graph, id: string) => g.nodes.find((n) => n.id === id)!.project;
+
+  it("is the key for a colon child, a real parent with members and a legacy follower; null for unrelated memories", () => {
+    const g = buildGraph(unlinked([["p", "VT"], ["c", "Vt : run"], ["l", "VT notes"], ["o", "Other"], ["u", "http://x.com"]]));
+    expect(projectOf(g, "p")).toBe("vt");
+    expect(projectOf(g, "c")).toBe("vt");
+    expect(projectOf(g, "l")).toBe("vt");
+    expect(projectOf(g, "o")).toBeNull();
+    expect(projectOf(g, "u")).toBeNull();
+  });
+
+  it("is null for a real memory titled like a project but without members", () => {
+    expect(projectOf(buildGraph(unlinked([["p", "VT"], ["o", "Other"]])), "p")).toBeNull();
+  });
+
+  it("is set on a virtual hub and its members", () => {
+    const g = buildGraph(unlinked([["a", "VT: one"], ["b", "VT two"], ["c", "AB: x"]]));
+    expect(projectOf(g, "project:vt")).toBe("vt");
+    expect(projectOf(g, "a")).toBe("vt");
+    expect(projectOf(g, "project:ab")).toBe("ab");
+    // a lone legacy follower of no known project stays unassigned
+    expect(projectOf(g, "b")).toBe("vt");
+  });
+
+  it("is the same when stored relations exist", () => {
+    let s = createEmptyWorkspace();
+    s = createMemory(s, ctx, { id: "p", title: "VT", content: "x", actor }).state;
+    s = createMemory(s, ctx, { id: "c", title: "VT: run", content: "x", actor }).state;
+    expect(listRelations(s).length).toBeGreaterThan(0);
+    const g = buildGraph(s);
+    expect([projectOf(g, "p"), projectOf(g, "c")]).toEqual(["vt", "vt"]);
+  });
+
+  it("does not change when filters hide other nodes", () => {
+    const g = buildGraph(unlinked([["a", "VT: one"], ["b", "VT: two"], ["c", "AB: x"]], { b: { tags: ["k"] } }));
+    const f = filterGraph(g, { tag: "k" });
+    expect(f.nodes.map((n) => n.id).sort()).toEqual(["b", "project:vt"]);
+    for (const n of f.nodes) expect(n.project).toBe(g.nodes.find((m) => m.id === n.id)!.project);
+    expect(projectOf(f, "b")).toBe("vt");
   });
 });

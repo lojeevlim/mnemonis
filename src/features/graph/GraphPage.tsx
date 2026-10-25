@@ -1,7 +1,8 @@
-import { useMemo, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { Button, Checkbox, Drawer, EmptyState, Input, Modal, SearchInput, Select } from "lojee-ui";
-import type { MemoryStatus } from "../../domain";
+import { listMemories, type MemoryStatus } from "../../domain";
+import { normalizeTitle, TITLE_PREFIX_LABEL, TITLE_PREFIX_PROCESS } from "../../domain/titlePrefix";
 import { useAction } from "../../components/hooks";
 import { PageHeader } from "../../components/PageHeader";
 import { STATUS_META, typeLabel } from "../../components/memoryMeta";
@@ -11,13 +12,17 @@ import { useInlineAction } from "../../components/useInlineAction";
 import { MemoryDetail } from "../memories/MemoryDetail";
 import { GraphCanvas, type FocusRequest } from "./GraphCanvas";
 import { GraphSidePanel } from "./GraphSidePanel";
+import { assignProjectAccents } from "./graphStyle";
 import {
   buildGraph,
   clusters as findClusters,
   filterGraph,
   isolatedNodes,
+  isVirtualNodeId,
   searchNodes,
+  type Graph,
   type GraphFilters,
+  type GraphNode,
 } from "./graphModel";
 import { usePrefersReducedMotion } from "./useReducedMotion";
 
@@ -25,10 +30,21 @@ const ALL = "";
 const DEFAULT_LABEL = "related to";
 const STATUSES = Object.keys(STATUS_META) as MemoryStatus[];
 
+function hubSelection(graph: Graph, hub: GraphNode): { hub: GraphNode; members: GraphNode[] } {
+  const byId = new Map(graph.nodes.map((n) => [n.id, n]));
+  const members = graph.edges
+    .filter((e) => e.target === hub.id)
+    .map((e) => byId.get(e.source))
+    .filter((n): n is GraphNode => !!n)
+    .sort((a, b) => a.title.localeCompare(b.title) || (a.id < b.id ? -1 : 1));
+  return { hub, members };
+}
+
 export function GraphPage() {
   const state = useWorkspace((s) => s.state);
   const addRelation = useWorkspace((s) => s.addRelation);
   const removeRelation = useWorkspace((s) => s.removeRelation);
+  const createMemory = useWorkspace((s) => s.createMemory);
   const act = useAction();
   const reducedMotion = usePrefersReducedMotion();
   const [params, setParams] = useSearchParams();
@@ -43,6 +59,10 @@ export function GraphPage() {
   const [linkMode, setLinkMode] = useState(false);
   const [linkSource, setLinkSource] = useState<string | null>(null);
   const [linkTarget, setLinkTarget] = useState<string | null>(null);
+  const [linkNotice, setLinkNotice] = useState<string | null>(null);
+  const [creatingHub, setCreatingHub] = useState(false);
+  const [hubNotice, setHubNotice] = useState<string | null>(null);
+  const creatingHubRef = useRef(false);
 
   const filters: GraphFilters = {
     type: params.get("type") || undefined,
@@ -70,12 +90,18 @@ export function GraphPage() {
     () => (base ? filterGraph(base, { type, collectionId, status, tag }) : null),
     [base, type, collectionId, status, tag],
   );
+  // Colours come from every project, archived memories included, so neither filters nor the archived toggle recolour anything.
+  const projectAccents = useMemo(() => {
+    if (!state || !base) return assignProjectAccents([]);
+    const all = archivedVisible ? base : buildGraph(state, { showArchived: true });
+    return assignProjectAccents(all.nodes.flatMap((n) => (n.project === null ? [] : [n.project])));
+  }, [state, base, archivedVisible]);
   const clusterList = useMemo(() => (graph ? findClusters(graph.nodes, graph.edges) : []), [graph]);
   const isolated = useMemo(() => (graph ? isolatedNodes(graph.nodes) : []), [graph]);
   const matches = useMemo(() => (graph ? searchNodes(graph.nodes, query) : []), [graph, query]);
 
   const options = useMemo(() => {
-    const nodes = base?.nodes ?? [];
+    const nodes = (base?.nodes ?? []).filter((n) => !n.virtual);
     const tags = new Map<string, string>();
     for (const n of nodes) for (const t of n.tags) if (!tags.has(t.toLowerCase())) tags.set(t.toLowerCase(), t);
     return {
@@ -83,6 +109,13 @@ export function GraphPage() {
       tags: [...tags.values()].sort((a, b) => a.localeCompare(b)),
     };
   }, [base]);
+
+  // A `project:` selection whose hub is gone (member deleted, renamed or archived) is a dead selection: clear it.
+  const staleHubId = openId && isVirtualNodeId(openId) && base && !base.nodes.some((n) => n.id === openId) ? openId : null;
+  useEffect(() => {
+    if (staleHubId) setParam("memory", null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [staleHubId]);
 
   if (!state || !base || !graph) return null;
 
@@ -118,6 +151,7 @@ export function GraphPage() {
   const resetLink = () => {
     setLinkSource(null);
     setLinkTarget(null);
+    setLinkNotice(null);
   };
   const toggleLinkMode = () => {
     setLinkMode((on) => !on);
@@ -128,12 +162,19 @@ export function GraphPage() {
 
   const selectNode = (id: string) => {
     if (linkMode) {
+      if (isVirtualNodeId(id)) {
+        const hub = base.nodes.find((n) => n.id === id);
+        setLinkNotice(`${hub ? `"${hub.title}"` : "A project hub"} is not a memory yet, so it cannot be linked. Create the memory first.`);
+        return;
+      }
+      setLinkNotice(null);
       if (!linkSource) setLinkSource(id);
       else if (id === linkSource) resetLink();
       else setLinkTarget(id);
       return;
     }
     setSelectedEdgeId(null);
+    setHubNotice(null);
     setParam("memory", id);
   };
   const selectEdge = (id: string) => {
@@ -157,12 +198,40 @@ export function GraphPage() {
   };
 
   const isEmpty = base.nodes.length === 0;
+  const memoryCount = graph.nodes.filter((n) => !n.virtual).length;
+  const hubNode = openId && isVirtualNodeId(openId) ? graph.nodes.find((n) => n.id === openId && n.virtual) : undefined;
+  const selectedHub = hubNode ? hubSelection(graph, hubNode) : null;
+  const createHub = async (hub: { title: string }) => {
+    if (creatingHubRef.current) return;
+    creatingHubRef.current = true;
+    setHubNotice(null);
+    setCreatingHub(true);
+    try {
+      const key = normalizeTitle(hub.title);
+      const existing = listMemories(state, { includePending: true }).find((m) => normalizeTitle(m.title) === key);
+      if (existing) {
+        const where = existing.archived ? "archived" : existing.status === "pending" ? "pending" : "saved";
+        setHubNotice(`A memory titled '${existing.title}' already exists (${where}).`);
+        return;
+      }
+      // As the user, so it saves at once; autoRelate then stores the "part of" relations and the virtual hub is replaced.
+      const { ok, value } = await act(
+        () =>
+          createMemory({ title: hub.title, content: `Project hub for ${hub.title} memories.`, type: "project", tags: [hub.title] }),
+        "Memory created",
+      );
+      if (ok && value) setParam("memory", value.id);
+    } finally {
+      creatingHubRef.current = false;
+      setCreatingHub(false);
+    }
+  };
 
   return (
     <div className="mx-auto max-w-7xl space-y-3 p-4">
       <PageHeader
         title="Knowledge Graph"
-        description="Memories and the relations you or your agents have stored between them. Edges are never inferred."
+        description={'Memories and the relations you or your agents have stored between them. Memories titled "<project>: ..." (or "<project> ...") are also grouped around their project, drawn as a big circle even when no memory titled "<project>" exists yet.'}
         actions={
           <Button
             size="sm"
@@ -261,7 +330,7 @@ export function GraphPage() {
             <Checkbox label="Highlight isolated memories" checked={highlightIsolated} onChange={(e) => setHighlightIsolated(e.target.checked)} />
             <Checkbox label="Show archived" checked={archivedVisible} disabled={filters.status === "archived"} onChange={(e) => setShowArchived(e.target.checked)} />
             <p className="text-xs text-fg-muted" aria-live="polite">
-              {graph.nodes.length} {graph.nodes.length === 1 ? "memory" : "memories"} · {graph.edges.length}{" "}
+              {memoryCount} {memoryCount === 1 ? "memory" : "memories"} · {graph.edges.length}{" "}
               {graph.edges.length === 1 ? "relation" : "relations"}
               {query.trim() ? ` · ${matches.length} ${matches.length === 1 ? "match" : "matches"}` : ""}
             </p>
@@ -280,6 +349,11 @@ export function GraphPage() {
                 return ok;
               }}
             />
+          )}
+          {linkMode && linkNotice && (
+            <p role="status" className="rounded-md border border-border bg-surface-muted px-3 py-2 text-sm text-fg-muted">
+              {linkNotice}
+            </p>
           )}
 
           {base.edges.length === 0 && (
@@ -306,6 +380,7 @@ export function GraphPage() {
                 <GraphCanvas
                   nodes={graph.nodes}
                   edges={graph.edges}
+                  projectAccents={projectAccents}
                   selectedNodeId={openId}
                   selectedEdgeId={edge?.id ?? null}
                   emphasisIds={emphasis}
@@ -321,9 +396,14 @@ export function GraphPage() {
             </div>
             <GraphSidePanel
               nodes={graph.nodes}
+              projectAccents={projectAccents}
               clusters={clusterList}
               activeClusterIndex={activeClusterIndex >= 0 ? activeClusterIndex : null}
               isolated={isolated}
+              selectedHub={selectedHub}
+              creatingHub={creatingHub}
+              hubNotice={hubNotice}
+              onCreateHub={(hub) => void createHub(hub)}
               selectedEdge={edge ? { edge, sourceTitle: titleOf(edge.source), targetTitle: titleOf(edge.target) } : null}
               onFocusCluster={(i) => {
                 const ids = clusterList[i];
@@ -345,8 +425,8 @@ export function GraphPage() {
         </>
       )}
 
-      <Drawer open={!!openId && !linkMode} onClose={() => setParam("memory", null)} title="Memory" size="min(44rem, 100vw)">
-        {openId && <MemoryDetail key={openId} memoryId={openId} onOpenMemory={(id) => setParam("memory", id)} />}
+      <Drawer open={!!openId && !isVirtualNodeId(openId) && !linkMode} onClose={() => setParam("memory", null)} title="Memory" size="min(44rem, 100vw)">
+        {openId && !isVirtualNodeId(openId) && <MemoryDetail key={openId} memoryId={openId} onOpenMemory={(id) => setParam("memory", id)} />}
       </Drawer>
 
       <Modal open={!!confirmEdge} onClose={() => setConfirmEdgeId(null)} title="Remove relation?">
@@ -356,6 +436,9 @@ export function GraphPage() {
               This removes &ldquo;{titleOf(confirmEdge.fromId)} — {confirmEdge.label} → {titleOf(confirmEdge.toId)}&rdquo;. The memories
               themselves are kept.
             </p>
+            {confirmEdge.label === TITLE_PREFIX_LABEL && confirmEdge.provenance.process === TITLE_PREFIX_PROCESS && (
+              <p className="text-sm text-fg-muted">It will reappear while the titles still match.</p>
+            )}
             <div className="flex justify-end gap-2">
               <Button size="sm" variant="outline" onClick={() => setConfirmEdgeId(null)}>
                 Cancel

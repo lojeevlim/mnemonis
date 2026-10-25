@@ -14,7 +14,11 @@ export interface SimNode {
   pinned?: boolean;
 }
 
-export type Link = readonly [string, string];
+/** A link; the optional third item is a custom rest length (project -> child), pulled with a stronger spring. */
+export type Link = readonly [string, string, number?];
+
+/** Spring strength multiplier for links that carry their own rest length. */
+const HUB_SPRING = 1.8;
 
 export interface LayoutOptions {
   repulsion: number;
@@ -124,14 +128,15 @@ export function step(
     }
   }
 
-  for (const [a, b] of links) {
+  for (const [a, b, length] of links) {
     const i = index.get(a);
     const j = index.get(b);
     if (i === undefined || j === undefined || i === j) continue;
     const dx = nodes[j].x - nodes[i].x;
     const dy = nodes[j].y - nodes[i].y;
     const d = Math.sqrt(dx * dx + dy * dy) || 1;
-    const f = opts.springStrength * (d - opts.springLength);
+    const f =
+      length === undefined ? opts.springStrength * (d - opts.springLength) : opts.springStrength * HUB_SPRING * (d - length);
     const ux = dx / d;
     const uy = dy / d;
     fx[i] += ux * f;

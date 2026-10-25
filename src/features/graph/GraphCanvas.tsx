@@ -1,8 +1,11 @@
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent } from "react";
 import { Button } from "lojee-ui";
 import { STATUS_META, typeLabel } from "../../components/memoryMeta";
 import type { GraphEdge, GraphNode } from "./graphModel";
-import { ACCENT, AMBER, nodeRadius, typeColor } from "./graphStyle";
+import { AMBER, NEUTRAL, accentFill, assignProjectAccents, nodeRadius, type ProjectAccent } from "./graphStyle";
+
+/** Selection/focus colour. Resolved on the svg root (see `style` there) so a node's own data-accent cannot recolour it. */
+const RING = "var(--mn-ring, #64748b)";
 import {
   DEFAULT_LAYOUT,
   fitTransform,
@@ -28,6 +31,8 @@ export interface FocusRequest {
 export interface GraphCanvasProps {
   nodes: GraphNode[];
   edges: GraphEdge[];
+  /** Project key -> accent. Pass one computed from the unfiltered graph so colours survive filtering; defaults to the shown nodes. */
+  projectAccents?: ReadonlyMap<string, ProjectAccent>;
   selectedNodeId?: string | null;
   selectedEdgeId?: string | null;
   /** When set, nodes outside it are dimmed (search matches, active cluster, ...). */
@@ -60,7 +65,17 @@ function topologyKey(nodes: GraphNode[], edges: GraphEdge[]): string {
 function computeLayout(prev: SimNode[], nodes: GraphNode[], edges: GraphEdge[], reduced: boolean): Layout {
   const ids = nodes.map((n) => n.id);
   const known = new Set(ids);
-  const links: Link[] = edges.filter((e) => known.has(e.source) && known.has(e.target)).map((e) => [e.source, e.target]);
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const radiusOf = (id: string): number => {
+    const n = byId.get(id);
+    return n ? nodeRadius(n) : 0;
+  };
+  // Project -> child edges get a rest length that keeps the child just outside the (bigger) hub circle.
+  const links: Link[] = edges
+    .filter((e) => known.has(e.source) && known.has(e.target))
+    .map((e) =>
+      e.prefix ? [e.source, e.target, radiusOf(e.source) + radiusOf(e.target) + 45] : [e.source, e.target],
+    );
   const placed = reconcile(prev, ids, links, SEED);
   if (reduced) return { key: topologyKey(nodes, edges), nodes: runToSettle(placed, links).nodes, links, alpha: 0 };
   return { key: topologyKey(nodes, edges), nodes: placed, links, alpha: ids.length > 0 ? 1 : 0 };
@@ -73,6 +88,7 @@ function truncate(s: string, n = 24): string {
 export function GraphCanvas({
   nodes,
   edges,
+  projectAccents: accentsProp,
   selectedNodeId = null,
   selectedEdgeId = null,
   emphasisIds = null,
@@ -84,6 +100,10 @@ export function GraphCanvas({
   onSelectEdge,
   onClearSelection,
 }: GraphCanvasProps) {
+  const accents = useMemo(
+    () => accentsProp ?? assignProjectAccents(nodes.flatMap((n) => (n.project === null ? [] : [n.project]))),
+    [accentsProp, nodes],
+  );
   const wrapRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const [size, setSize] = useState(DEFAULT_SIZE);
@@ -269,6 +289,8 @@ export function GraphCanvas({
         height="100%"
         className="block touch-none select-none"
         data-testid="graph-svg"
+        // Resolved here, outside any data-accent element, so selection rings stay neutral on project-coloured nodes.
+        style={{ "--mn-ring": "var(--color-accent-500, #64748b)" } as CSSProperties}
         role="presentation"
       >
         <rect
@@ -305,11 +327,14 @@ export function GraphCanvas({
               const active = selected || touching || e.id === hoverEdge;
               const dim = emphasisIds && !(emphasisIds.has(e.source) && emphasisIds.has(e.target));
               const labelVisible = showEdgeLabel(e);
-              const description = `Relation: ${titles.get(e.source)?.title} ${e.label} ${titles.get(e.target)?.title}`;
+              const edgeProject = e.prefix ? nodeById.get(e.target)?.project ?? null : null;
+              const edgeAccent = edgeProject === null ? undefined : accents.get(edgeProject);
+              const description = `Relation: ${titles.get(e.source)?.title} ${e.label} ${titles.get(e.target)?.title}${e.derived ? " (derived from title prefix)" : ""}`;
               return (
                 <g
                   key={e.id}
                   data-edge-id={e.id}
+                  data-accent={edgeAccent?.accent}
                   data-selected={selected || undefined}
                   role="button"
                   tabIndex={0}
@@ -333,9 +358,10 @@ export function GraphCanvas({
                     y1={y1}
                     x2={x2}
                     y2={y2}
-                    stroke={active ? ACCENT : "var(--color-fg-subtle, #7c8aa0)"}
-                    strokeOpacity={active ? 1 : 0.45}
+                    stroke={active ? RING : edgeAccent ? accentFill(edgeAccent.shade) : "var(--color-fg-subtle, #7c8aa0)"}
+                    strokeOpacity={active ? 1 : edgeAccent ? 0.55 : 0.45}
                     strokeWidth={selected ? 2.5 : active ? 1.8 : 1.2}
+                    strokeDasharray={e.derived ? "4 3" : undefined}
                   />
                   {labelVisible && (
                     <text
@@ -366,13 +392,20 @@ export function GraphCanvas({
               const isLinkSource = n.id === linkSourceId;
               const highlighted = !!highlightIds?.has(n.id);
               const dim = emphasisIds ? !emphasisIds.has(n.id) : false;
-              const color = typeColor(n.type);
-              const label = `${n.title}, ${typeLabel(n.type)}, ${STATUS_META[n.status].label}, ${n.degree} ${n.degree === 1 ? "relation" : "relations"}`;
+              const accent = n.project === null ? undefined : accents.get(n.project);
+              const color = accent ? accentFill(accent.shade) : NEUTRAL;
+              const project = n.isProject ? `project with ${n.childCount} ${n.childCount === 1 ? "memory" : "memories"}, ` : "";
+              const relations = `${n.degree} ${n.degree === 1 ? "relation" : "relations"}`;
+              const label = n.virtual
+                ? `${n.title}, ${project.replace(/, $/, "")} (no memory titled ${n.title} yet), ${relations}`
+                : `${n.title}, ${project}${typeLabel(n.type)}, ${STATUS_META[n.status].label}, ${relations}`;
               return (
                 <g
                   key={n.id}
                   data-node-id={n.id}
+                  data-accent={accent?.accent}
                   data-selected={selected || undefined}
+                  data-virtual={n.virtual || undefined}
                   data-highlighted={highlighted || undefined}
                   data-dimmed={dim || undefined}
                   data-pinned={p.pinned || undefined}
@@ -391,25 +424,29 @@ export function GraphCanvas({
                   }}
                   onKeyDown={(e) => activate(e, () => onSelectNode(n.id))}
                 >
-                  <circle className="mn-focus opacity-0" r={r + 8} fill="none" stroke={ACCENT} strokeWidth={2} />
+                  <circle className="mn-focus opacity-0" r={r + 8} fill="none" stroke={RING} strokeWidth={2} />
                   {(selected || isLinkSource) && (
-                    <circle r={r + 6} fill="none" stroke={ACCENT} strokeWidth={2} strokeDasharray={isLinkSource && !selected ? "4 3" : undefined} />
+                    <circle r={r + 6} fill="none" stroke={RING} strokeWidth={2} strokeDasharray={isLinkSource && !selected ? "4 3" : undefined} />
                   )}
                   {highlighted && <circle r={r + 5} fill="none" stroke={AMBER} strokeWidth={1.5} strokeDasharray="2 3" />}
                   {n.status === "pending" && <circle r={r + 3} fill="none" stroke={AMBER} strokeWidth={2} />}
+                  {n.virtual && (
+                    <circle r={r + 3} fill="none" stroke={color} strokeWidth={2} strokeDasharray="6 4" data-virtual-ring="true" />
+                  )}
                   <circle
                     r={r}
                     fill={color}
-                    fillOpacity={n.archived ? 0.35 : 0.9}
+                    fillOpacity={n.archived ? 0.35 : n.virtual ? 0.6 : 0.9}
                     stroke={color}
-                    strokeWidth={n.archived ? 1.5 : 1}
-                    strokeDasharray={n.archived ? "3 2" : undefined}
+                    strokeWidth={n.virtual ? 2 : n.archived ? 1.5 : 1}
+                    strokeDasharray={n.virtual ? "6 4" : n.archived ? "3 2" : undefined}
                   />
-                  {(current.k >= 0.5 || selected) && (
+                  {(current.k >= 0.5 || selected || n.isProject) && (
                     <text
                       y={r + 13}
                       textAnchor="middle"
-                      fontSize={11}
+                      fontSize={n.isProject ? 13 : 11}
+                      fontWeight={n.isProject ? 600 : undefined}
                       fill="var(--color-fg, #f1f5f9)"
                       stroke="var(--color-surface-raised, #111a2b)"
                       strokeWidth={3}

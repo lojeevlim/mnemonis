@@ -1,5 +1,5 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { listRelations } from "../../domain";
+import { listMemories, listRelations } from "../../domain";
 import { useWorkspace } from "../../stores/workspaceStore";
 import { nativeSelect, renderAt, resetWorkspace } from "../../test/helpers";
 import { GraphPage } from "./GraphPage";
@@ -8,8 +8,9 @@ const store = () => useWorkspace.getState();
 /** Saved relations only: the seed also carries a pending agent link, which the graph must not draw. */
 const savedRelations = () => listRelations(store().state!);
 const renderPage = (path = "/graph") => renderAt(path, "/graph", <GraphPage />);
-const nodeEls = (c: HTMLElement) => [...c.querySelectorAll<SVGGElement>("[data-node-id]")];
-const edgeEls = (c: HTMLElement) => [...c.querySelectorAll<SVGGElement>("[data-edge-id]")];
+/** Real memories only: virtual project hubs and their derived edges are asserted separately. */
+const nodeEls = (c: HTMLElement) => [...c.querySelectorAll<SVGGElement>("[data-node-id]:not([data-virtual])")];
+const edgeEls = (c: HTMLElement) => [...c.querySelectorAll<SVGGElement>("[data-edge-id]:not([data-edge-id*=':project:'])")];
 const nodeEl = (c: HTMLElement, id: string) => c.querySelector<SVGGElement>(`[data-node-id="${id}"]`)!;
 
 const realMatchMedia = window.matchMedia;
@@ -37,7 +38,9 @@ describe("Graph: rendering the seed", () => {
     expect(nodeEls(container)).toHaveLength(18);
     expect(edgeEls(container)).toHaveLength(savedRelations().length);
     expect(edgeEls(container)).toHaveLength(16);
-    expect(screen.getByText(/18 memories · 16 relations/)).toBeInTheDocument();
+    // The seed's repeated "Decision:", "Meeting:", ... prefixes add 7 virtual hubs (Decision 3, Meeting 2, Procedure 2, Research 2, Task 2, Project 1, Reference 1) and 13 derived edges.
+    expect(container.querySelectorAll("[data-virtual]")).toHaveLength(7);
+    expect(screen.getByText(/18 memories · 29 relations/)).toBeInTheDocument();
     // Clusters panel: one cluster of 16, two isolated.
     expect(screen.getByText("Cluster 1 · 16 memories")).toBeInTheDocument();
   });
@@ -63,6 +66,48 @@ describe("Graph: rendering the seed", () => {
     const { container } = renderPage();
     expect(nodeEls(container)).toHaveLength(1);
     expect(screen.getByText(/No relations yet/)).toBeInTheDocument();
+  });
+});
+
+describe("Graph: project hubs", () => {
+  it("draws a derived, read-only prefix edge to a project hub with a descriptive label", async () => {
+    await resetWorkspace();
+    await store().createMemory({ title: "VT", content: "x", type: "project", tags: [] });
+    await store().createMemory({ title: "VT: run build", content: "x", type: "fact", tags: [] });
+    // Mimic memories saved before the feature: no stored relation between them.
+    useWorkspace.setState({ state: { ...store().state!, relations: {} } });
+    const { container } = renderPage();
+    expect(screen.getByLabelText(/^VT, project with 1 memory,/)).toBeInTheDocument();
+    expect(edgeEls(container)).toHaveLength(1);
+    fireEvent.click(edgeEls(container)[0]);
+    expect(within(screen.getByTestId("selected-edge")).getByText(/Derived from title prefix/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "Remove relation" })).not.toBeInTheDocument();
+  });
+});
+
+describe("Graph: removing prefix relations", () => {
+  const removeDialog = async (container: HTMLElement) => {
+    fireEvent.click(edgeEls(container)[0]);
+    fireEvent.click(screen.getByRole("button", { name: "Remove relation" }));
+    return within(await screen.findByRole("dialog"));
+  };
+
+  it("hints that a title-prefix relation reappears", async () => {
+    await resetWorkspace();
+    await store().createMemory({ title: "VT", content: "x", type: "project", tags: [] });
+    await store().createMemory({ title: "VT: run build", content: "x", type: "fact", tags: [] });
+    const { container } = renderPage();
+    expect((await removeDialog(container)).getByText(/will reappear while the titles still match/)).toBeInTheDocument();
+  });
+
+  it("does not hint for a manual relation", async () => {
+    await resetWorkspace();
+    await store().createMemory({ title: "A", content: "x", type: "fact", tags: [] });
+    await store().createMemory({ title: "B", content: "x", type: "fact", tags: [] });
+    const [a, b] = Object.keys(store().state!.memories);
+    await store().addRelation(a, b, "part of");
+    const { container } = renderPage();
+    expect((await removeDialog(container)).queryByText(/will reappear/)).not.toBeInTheDocument();
   });
 });
 
@@ -233,5 +278,230 @@ describe("Graph: relations", () => {
     await waitFor(() => expect(store().state!.relations[id]).toBeUndefined());
     await waitFor(() => expect(edgeEls(container)).toHaveLength(15));
     expect(screen.queryByTestId("selected-edge")).not.toBeInTheDocument();
+  });
+});
+
+describe("Graph: virtual project hubs", () => {
+  const userTitles = [
+    "vt: ticket selling feature flow and gotchas",
+    "vt: conductor payout flow (Stripe Connect)",
+    "VT run, build, test",
+    "VT project overview",
+    "VT coding conventions",
+    "VT new-developer first steps",
+  ];
+  const seedVt = async () => {
+    await resetWorkspace();
+    for (const title of userTitles) await store().createMemory({ title, content: "x", type: "fact", tags: [] });
+    useWorkspace.setState({ state: { ...store().state!, relations: {} } });
+  };
+  const hubEl = (c: HTMLElement) => c.querySelector<SVGGElement>('[data-node-id="project:vt"]')!;
+
+  it("draws a hub for a single colon memory with the singular label", async () => {
+    await resetWorkspace();
+    await store().createMemory({ title: "VT: only one", content: "x", type: "fact", tags: [] });
+    const { container } = renderPage();
+    expect(hubEl(container)).toHaveAttribute("aria-label", "VT, project with 1 memory (no memory titled VT yet), 1 relation");
+    expect(container.querySelectorAll('[data-edge-id="prefix:' + Object.keys(store().state!.memories)[0] + ':project:vt"]')).toHaveLength(1);
+  });
+
+  it("draws one dashed hub with a descriptive label and six derived edges", async () => {
+    await seedVt();
+    const { container } = renderPage();
+    const hub = hubEl(container);
+    expect(hub).toHaveAttribute("aria-label", "VT, project with 6 memories (no memory titled VT yet), 6 relations");
+    expect(hub).toHaveAttribute("data-virtual", "true");
+    expect(hub.querySelector("[data-virtual-ring]")).toHaveAttribute("stroke-dasharray");
+    expect(hub).toHaveTextContent("VT");
+    expect(container.querySelectorAll("[data-edge-id*=':project:vt']")).toHaveLength(6);
+    expect(screen.getByText(/6 memories · 6 relations/)).toBeInTheDocument();
+  });
+
+  it("shows the hub in the side panel with its members, without opening the memory drawer", async () => {
+    await seedVt();
+    const { container } = renderPage();
+    fireEvent.click(hubEl(container));
+    const panel = screen.getByTestId("selected-hub");
+    expect(panel).toHaveTextContent("Project VT · 6 memories · no memory titled VT yet");
+    expect(within(panel).getAllByRole("listitem")).toHaveLength(6);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(screen.getByTestId("location")).toHaveTextContent("memory=project%3Avt");
+    fireEvent.click(within(panel).getByRole("button", { name: "VT project overview" }));
+    expect(await screen.findByRole("dialog")).toBeInTheDocument();
+    expect(screen.queryByTestId("selected-hub")).not.toBeInTheDocument();
+  });
+
+  it("does not open a drawer for a hub id in the URL", async () => {
+    await seedVt();
+    renderPage("/graph?memory=project%3Avt");
+    expect(screen.getByTestId("selected-hub")).toBeInTheDocument();
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  it("creates the real memory as the user and replaces the hub", async () => {
+    await resetWorkspace();
+    await store().createMemory({ title: "vt: one", content: "x", type: "fact", tags: [] });
+    await store().createMemory({ title: "vt: two", content: "x", type: "fact", tags: [] });
+    const { container } = renderPage();
+    fireEvent.click(hubEl(container));
+    fireEvent.click(screen.getByRole("button", { name: "Create 'vt' memory" }));
+    await waitFor(() => expect(hubEl(container)).toBeNull());
+    expect(container.querySelectorAll("[data-virtual]")).toHaveLength(0);
+    expect(nodeEls(container)).toHaveLength(3);
+    // Two stored relations only: no derived duplicates.
+    expect(savedRelations()).toHaveLength(2);
+    expect(edgeEls(container)).toHaveLength(2);
+    expect(screen.getByLabelText(/^vt, project with 2 memories, project, Long Term Memory, 2 relations$/)).toBeInTheDocument();
+  });
+
+  const twoVt = async () => {
+    await resetWorkspace();
+    await store().createMemory({ title: "vt: one", content: "x", type: "fact", tags: [] });
+    await store().createMemory({ title: "vt: two", content: "x", type: "fact", tags: [] });
+  };
+  const listTitles = () => listMemories(store().state!, { includePending: true }).map((m) => m.title);
+  const countTitled = (t: string) => listTitles().filter((x) => x === t).length;
+
+  it("tags the created hub memory with the project name", async () => {
+    await twoVt();
+    const { container } = renderPage();
+    fireEvent.click(hubEl(container));
+    fireEvent.click(screen.getByRole("button", { name: "Create 'vt' memory" }));
+    await waitFor(() => expect(hubEl(container)).toBeNull());
+    const hub = listMemories(store().state!).find((m) => m.title === "vt")!;
+    expect(hub.tags).toContain("vt");
+  });
+
+  it("does not create a duplicate when an archived memory has the hub title", async () => {
+    await twoVt();
+    const m = await store().createMemory({ title: "VT", content: "x", type: "project", tags: [] });
+    await store().archiveMemory(m!.id);
+    useWorkspace.setState({ state: { ...store().state!, relations: {} } });
+    const { container } = renderPage();
+    fireEvent.click(hubEl(container));
+    fireEvent.click(screen.getByRole("button", { name: /^Create '/ }));
+    expect(await screen.findByText(/already exists \(archived\)/)).toBeInTheDocument();
+    expect(listTitles().filter((t) => t.toLowerCase() === "vt")).toHaveLength(1);
+  });
+
+  it("does not create a duplicate when a pending memory has the hub title", async () => {
+    await twoVt();
+    await store().createMemory(
+      { title: "VT", content: "x", type: "project", tags: [] },
+      { actor: { kind: "agent", name: "bot" } },
+    );
+    expect(listMemories(store().state!).some((m) => m.title === "VT")).toBe(false);
+    const { container } = renderPage();
+    fireEvent.click(hubEl(container));
+    fireEvent.click(screen.getByRole("button", { name: /^Create '/ }));
+    expect(await screen.findByText(/already exists \(pending\)/)).toBeInTheDocument();
+    expect(listTitles().filter((t) => t.toLowerCase() === "vt")).toHaveLength(1);
+  });
+
+  it("creates only one memory on a double click", async () => {
+    await twoVt();
+    const { container } = renderPage();
+    fireEvent.click(hubEl(container));
+    const btn = screen.getByRole("button", { name: "Create 'vt' memory" });
+    fireEvent.click(btn);
+    fireEvent.click(btn);
+    await waitFor(() => expect(hubEl(container)).toBeNull());
+    expect(countTitled("vt")).toBe(1);
+  });
+
+  it("clears a stale project: id from the URL", async () => {
+    await twoVt();
+    renderPage("/graph?memory=project%3Agone");
+    await waitFor(() => expect(screen.getByTestId("location")).not.toHaveTextContent("memory="));
+  });
+
+  it("refuses to link a virtual hub in link mode", async () => {
+    await seedVt();
+    const { container } = renderPage();
+    fireEvent.click(screen.getByRole("button", { name: "Link mode" }));
+    fireEvent.click(hubEl(container));
+    expect(screen.getByRole("status")).toHaveTextContent(/not a memory yet, so it cannot be linked/);
+    expect(screen.getByText(/click the source memory/)).toBeInTheDocument();
+    fireEvent.click(nodeEls(container)[0]);
+    fireEvent.click(hubEl(container));
+    expect(screen.getByText(/Now click the target memory/)).toBeInTheDocument();
+    expect(screen.queryByLabelText("Relation label")).not.toBeInTheDocument();
+    expect(savedRelations()).toHaveLength(0);
+  });
+});
+
+describe("Graph: colours per project", () => {
+  const mk = async (titles: string[]) => {
+    await resetWorkspace();
+    for (const title of titles) await store().createMemory({ title, content: "x", type: "fact", tags: [] });
+    useWorkspace.setState({ state: { ...store().state!, relations: {} } });
+  };
+  const accentOf = (c: HTMLElement, id: string) => nodeEl(c, id).getAttribute("data-accent");
+
+  it("gives members, hub and edges of a project one accent, and other projects another", async () => {
+    await mk(["VT: one", "VT: two", "Mnemo: a", "Mnemo: b", "Loose note"]);
+    const { container } = renderPage();
+    const ids = Object.fromEntries(listMemories(store().state!).map((m) => [m.title, m.id]));
+    const vt = accentOf(container, "project:vt");
+    const mn = accentOf(container, "project:mnemo");
+    expect(vt).toBeTruthy();
+    expect(mn).toBeTruthy();
+    expect(vt).not.toBe(mn);
+    expect(accentOf(container, ids["VT: one"])).toBe(vt);
+    expect(accentOf(container, ids["VT: two"])).toBe(vt);
+    expect(accentOf(container, ids["Mnemo: a"])).toBe(mn);
+    expect(container.querySelector(`[data-edge-id="prefix:${ids["VT: one"]}:project:vt"]`)).toHaveAttribute("data-accent", vt!);
+    expect(container.querySelector(`[data-edge-id="prefix:${ids["Mnemo: b"]}:project:mnemo"]`)).toHaveAttribute("data-accent", mn!);
+    expect(nodeEl(container, ids["Loose note"])).not.toHaveAttribute("data-accent");
+    expect(nodeEl(container, ids["Loose note"]).querySelector("circle:not(.mn-focus)")).toHaveAttribute("fill", expect.stringContaining("slate-400"));
+    expect(nodeEl(container, "project:vt").querySelector("circle[fill^='var(--color-accent-']")).not.toBeNull();
+  });
+
+  it("lists projects with colour dots and a No project entry in the legend", async () => {
+    await mk(["VT: one", "VT: two", "Mnemo: a", "Loose note"]);
+    renderPage();
+    const legend = screen.getByRole("list", { name: "Legend" });
+    const rows = [...legend.querySelectorAll<HTMLElement>("[data-legend-project]")];
+    expect(rows.map((r) => r.getAttribute("data-legend-project"))).toEqual(["mnemo", "vt", ""]);
+    expect(rows[0]).toHaveTextContent("Mnemo");
+    expect(rows[1]).toHaveTextContent("VT");
+    expect(rows[1]).toHaveTextContent("2");
+    expect(rows[2]).toHaveTextContent("No project");
+    const dot = (r: HTMLElement) => r.querySelector<HTMLElement>("[data-project-dot]")!;
+    expect(dot(rows[1]).getAttribute("data-accent")).toBeTruthy();
+    expect(dot(rows[1]).getAttribute("data-accent")).not.toBe(dot(rows[0]).getAttribute("data-accent"));
+    expect(dot(rows[1]).style.background).toContain("--color-accent-");
+    expect(dot(rows[2])).not.toHaveAttribute("data-accent");
+  });
+
+  it("keeps project colours when a filter hides other projects", async () => {
+    await resetWorkspace();
+    for (const [title, tags] of [["VT: one", ["k"]], ["Mnemo: a", []], ["Zed: z", []], ["Abc: z", []]] as const)
+      await store().createMemory({ title, content: "x", type: "fact", tags: [...tags] });
+    useWorkspace.setState({ state: { ...store().state!, relations: {} } });
+    const first = renderPage();
+    const before = accentOf(first.container, "project:vt");
+    first.unmount();
+    renderPage("/graph?tag=k");
+    expect(document.querySelector('[data-node-id="project:mnemo"]')).toBeNull();
+    expect(document.querySelector('[data-node-id="project:vt"]')!.getAttribute("data-accent")).toBe(before);
+  });
+
+  it("keeps project colours when 'Show archived' is toggled, even with archived-only projects", async () => {
+    await resetWorkspace();
+    for (const title of ["VT: one", "Mnemo: a", "Stripe: s"]) await store().createMemory({ title, content: "x", type: "fact", tags: [] });
+    for (const p of ["Alpha", "Beta", "Gamma", "Delta", "Epsilon", "Zeta", "Eta", "Theta", "Iota", "Kappa", "Lambda", "Omega"]) {
+      const m = await store().createMemory({ title: `${p}: x`, content: "x", type: "fact", tags: [] });
+      await store().archiveMemory(m!.id);
+    }
+    useWorkspace.setState({ state: { ...store().state!, relations: {} } });
+    const { container } = renderPage();
+    const keys = ["project:vt", "project:mnemo", "project:stripe"];
+    const before = keys.map((k) => accentOf(container, k));
+    expect(document.querySelector('[data-node-id="project:alpha"]')).toBeNull();
+    fireEvent.click(screen.getByLabelText("Show archived"));
+    expect(document.querySelector('[data-node-id="project:alpha"]')).not.toBeNull();
+    expect(keys.map((k) => accentOf(container, k))).toEqual(before);
+    expect(before.every(Boolean)).toBe(true);
   });
 });

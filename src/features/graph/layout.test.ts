@@ -63,6 +63,19 @@ describe("simulation", () => {
     expect(Math.abs(nodes[1].x - nodes[0].x)).toBeLessThan(400);
   });
 
+  it("treats links without a rest length (legacy 2-element links) as before", () => {
+    const far = (): SimNode[] => [
+      { id: "a", x: -400, y: 0, vx: 0, vy: 0 },
+      { id: "b", x: 400, y: 0, vx: 0, vy: 0 },
+    ];
+    const legacy: Link[] = [["a", "b"]];
+    const next = step(far(), legacy);
+    expect(Number.isFinite(next[0].x)).toBe(true);
+    expect(next[0].x).toBeGreaterThan(-400); // pulled toward its partner
+    expect(next[1].x).toBeLessThan(400);
+    expect(step(far(), legacy)).toEqual(next);
+  });
+
   it("gravity keeps unlinked components near the centre", () => {
     const { nodes } = runToSettle(initialPositions(["x", "y", "z"], 5, 800), []);
     for (const n of nodes) expect(Math.hypot(n.x, n.y)).toBeLessThan(800);
@@ -123,5 +136,19 @@ describe("view transforms", () => {
     expect((100 - z.y) / z.k).toBeCloseTo((100 - v.y) / v.k);
     expect(zoomAt(v, 1000, 0, 0).k).toBe(MAX_ZOOM);
     expect(clampZoom(0)).toBe(MIN_ZOOM);
+  });
+});
+
+describe("hub links", () => {
+  it("pull children into a ring near the hub at their rest length", () => {
+    const hubIds = ["hub", "k1", "k2", "k3", "k4"];
+    const hubLinks: Link[] = hubIds.slice(1).map((k) => ["k" + k.slice(1), "hub", 70] as Link);
+    const { nodes } = runToSettle(initialPositions(hubIds, 7), hubLinks);
+    const hub = nodes.find((n) => n.id === "hub")!;
+    for (const n of nodes.filter((x) => x.id !== "hub")) {
+      const d = Math.hypot(n.x - hub.x, n.y - hub.y);
+      expect(d).toBeGreaterThan(30);
+      expect(d).toBeLessThan(130);
+    }
   });
 });

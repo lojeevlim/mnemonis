@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties, type Keyboard
 import { Button } from "lojee-ui";
 import { STATUS_META, typeLabel } from "../../components/memoryMeta";
 import type { GraphEdge, GraphNode } from "./graphModel";
-import { AMBER, NEUTRAL, accentFill, assignProjectAccents, ATTRIBUTE_DASH, ATTRIBUTE_KIND_LABEL, nodeRadius, type ProjectAccent } from "./graphStyle";
+import { AMBER, NEUTRAL, accentFill, assignProjectAccents, ATTRIBUTE_DASH, nodeRadius, type ProjectAccent } from "./graphStyle";
 
 /** Selection/focus colour. Resolved on the svg root (see `style` there) so a node's own data-accent cannot recolour it. */
 const RING = "var(--mn-ring, #64748b)";
@@ -70,11 +70,16 @@ function computeLayout(prev: SimNode[], nodes: GraphNode[], edges: GraphEdge[], 
     const n = byId.get(id);
     return n ? nodeRadius(n) : 0;
   };
-  // Project -> child and hub -> member edges get a rest length that keeps the child just outside the (bigger) hub circle.
+  // Project -> child edges get a rest length that keeps the child just outside the (bigger) hub circle; value -> category edges
+  // a short one so the values orbit their category hub. Memory -> value edges are plain (weaker) springs.
   const links: Link[] = edges
     .filter((e) => known.has(e.source) && known.has(e.target))
     .map((e) =>
-      e.prefix || e.attribute ? [e.source, e.target, radiusOf(e.source) + radiusOf(e.target) + 45] : [e.source, e.target],
+      e.prefix
+        ? [e.source, e.target, radiusOf(e.source) + radiusOf(e.target) + 45]
+        : e.category
+          ? [e.source, e.target, radiusOf(e.source) + radiusOf(e.target) + 22]
+          : [e.source, e.target],
     );
   const placed = reconcile(prev, ids, links, SEED);
   if (reduced) return { key: topologyKey(nodes, edges), nodes: runToSettle(placed, links).nodes, links, alpha: 0 };
@@ -333,9 +338,10 @@ export function GraphCanvas({
                     x2={x2}
                     y2={y2}
                     stroke="var(--color-fg-subtle, #7c8aa0)"
-                    strokeOpacity={dimAttr ? 0.08 : 0.35}
-                    strokeWidth={1}
-                    strokeDasharray="1.5 3.5"
+                    data-category-edge={e.category || undefined}
+                    strokeOpacity={dimAttr ? 0.08 : e.category ? 0.7 : 0.35}
+                    strokeWidth={e.category ? 1.5 : 1}
+                    strokeDasharray={e.category ? undefined : "1.5 3.5"}
                     strokeLinecap="round"
                     pointerEvents="none"
                     aria-hidden="true"
@@ -417,7 +423,9 @@ export function GraphCanvas({
               const project = n.isProject ? `project with ${n.childCount} ${n.childCount === 1 ? "memory" : "memories"}, ` : "";
               const relations = `${n.degree} ${n.degree === 1 ? "relation" : "relations"}`;
               const label = n.attr
-                ? `${n.title}, ${n.attr} node, ${n.degree} ${n.degree === 1 ? "memory" : "memories"}`
+                ? n.attrRole === "category"
+                  ? `${n.title}, ${n.degree} ${n.degree === 1 ? "value" : "values"}`
+                  : `${n.title}, ${n.attr} node, ${n.degree} ${n.degree === 1 ? "memory" : "memories"}`
                 : n.virtual
                 ? `${n.title}, ${project.replace(/, $/, "")} (no memory titled ${n.title} yet), ${relations}`
                 : `${n.title}, ${project}${typeLabel(n.type)}, ${STATUS_META[n.status].label}, ${relations}`;
@@ -429,6 +437,7 @@ export function GraphCanvas({
                   data-selected={selected || undefined}
                   data-virtual={n.virtual || undefined}
                   data-attribute={n.attr}
+                  data-attribute-role={n.attrRole}
                   data-highlighted={highlighted || undefined}
                   data-dimmed={dim || undefined}
                   data-pinned={p.pinned || undefined}
@@ -451,21 +460,19 @@ export function GraphCanvas({
                   {(selected || isLinkSource) && (
                     <circle r={r + 6} fill="none" stroke={RING} strokeWidth={2} strokeDasharray={isLinkSource && !selected ? "4 3" : undefined} />
                   )}
-                  {n.attr && (
-                    <>
-                      <circle
-                        r={r}
-                        fill={NEUTRAL}
-                        fillOpacity={0.12}
-                        stroke={NEUTRAL}
-                        strokeWidth={2}
-                        strokeDasharray={ATTRIBUTE_DASH[n.attr]}
-                        strokeLinecap="round"
-                      />
-                      <text y={4} textAnchor="middle" fontSize={10} fill={NEUTRAL} pointerEvents="none" data-attr-kind-label={n.attr}>
-                        {ATTRIBUTE_KIND_LABEL[n.attr]}
-                      </text>
-                    </>
+                  {n.attr && n.attrRole === "category" && (
+                    <circle
+                      r={r}
+                      fill={NEUTRAL}
+                      fillOpacity={0.12}
+                      stroke={NEUTRAL}
+                      strokeWidth={2}
+                      strokeDasharray={ATTRIBUTE_DASH[n.attr]}
+                      strokeLinecap="round"
+                    />
+                  )}
+                  {n.attr && n.attrRole !== "category" && (
+                    <circle r={r} fill={NEUTRAL} fillOpacity={0.55} stroke={NEUTRAL} strokeWidth={1} />
                   )}
                   {highlighted && <circle r={r + 5} fill="none" stroke={AMBER} strokeWidth={1.5} strokeDasharray="2 3" />}
                   {n.status === "pending" && !n.attr && <circle r={r + 3} fill="none" stroke={AMBER} strokeWidth={2} />}
@@ -480,19 +487,19 @@ export function GraphCanvas({
                     strokeWidth={n.virtual ? 2 : n.archived ? 1.5 : 1}
                     strokeDasharray={n.virtual ? "6 4" : n.archived ? "3 2" : undefined}
                   />}
-                  {(current.k >= 0.5 || selected || n.isProject || n.attr) && (
+                  {(current.k >= 0.5 || selected || n.isProject || n.attrRole === "category") && (
                     <text
                       y={r + 13}
                       textAnchor="middle"
-                      fontSize={n.isProject || n.attr ? 13 : 11}
-                      fontWeight={n.isProject || n.attr ? 600 : undefined}
+                      fontSize={n.isProject || n.attrRole === "category" ? 13 : n.attr ? 10 : 11}
+                      fontWeight={n.isProject || n.attrRole === "category" ? 600 : undefined}
                       fill="var(--color-fg, #f1f5f9)"
                       stroke="var(--color-surface-raised, #111a2b)"
                       strokeWidth={3}
                       paintOrder="stroke"
                       pointerEvents="none"
                     >
-                      {truncate(n.title)}
+                      {n.attrRole === "category" ? `${n.title} · ${n.degree}` : truncate(n.title)}
                     </text>
                   )}
                 </g>

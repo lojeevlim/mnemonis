@@ -43,10 +43,12 @@ function hubSelection(graph: Graph, hub: GraphNode): { hub: GraphNode; members: 
   return { hub, members };
 }
 
+/** A value node lists its linked memories; a category hub lists its value nodes. */
 function attributeSelection(graph: Graph, node: GraphNode): { node: GraphNode; members: GraphNode[] } {
   const byId = new Map(graph.nodes.map((n) => [n.id, n]));
+  const category = node.attrRole === "category";
   const members = graph.edges
-    .filter((e) => e.attribute && e.target === node.id)
+    .filter((e) => e.attribute && !!e.category === category && e.target === node.id)
     .map((e) => byId.get(e.source))
     .filter((n): n is GraphNode => !!n)
     .sort((a, b) => a.title.localeCompare(b.title) || (a.id < b.id ? -1 : 1));
@@ -73,7 +75,7 @@ export function GraphPage() {
   const [linkSource, setLinkSource] = useState<string | null>(null);
   const [linkTarget, setLinkTarget] = useState<string | null>(null);
   const [linkNotice, setLinkNotice] = useState<string | null>(null);
-  const [chosenKind, setChosenKind] = useState<AttributeKind | null>(null);
+  const [chosenKinds, setChosenKinds] = useState<ReadonlySet<AttributeKind>>(() => new Set());
   const [attributeId, setAttributeId] = useState<string | null>(null);
   const [creatingHub, setCreatingHub] = useState(false);
   const [hubNotice, setHubNotice] = useState<string | null>(null);
@@ -105,13 +107,14 @@ export function GraphPage() {
     () => (base ? filterGraph(base, { type, collectionId, status, tag }) : null),
     [base, type, collectionId, status, tag],
   );
-  // Attribute hubs are added on the filtered graph, so one whose members are all filtered out never shows, and a kind with no
-  // hub is not offered (a chosen kind that filters leave empty falls back to none). Counts, clusters and search keep using `graph`.
+  // Category hubs and value nodes are added on the filtered graph, so a value whose memories are all filtered out never shows, and a
+  // category with no value is not offered (a checked one that filters leave empty is simply not drawn). Counts, clusters and search
+  // keep using `graph`.
   const availableKinds = useMemo(() => (graph && state ? availableAttributeKinds(graph, state.collections) : []), [graph, state]);
-  const attributeKind = chosenKind !== null && availableKinds.includes(chosenKind) ? chosenKind : null;
+  const attributeKinds = useMemo(() => new Set(availableKinds.filter((k) => chosenKinds.has(k))), [availableKinds, chosenKinds]);
   const shown = useMemo(
-    () => (graph && state ? withAttributeNodes(graph, attributeKind, state.collections) : null),
-    [graph, state, attributeKind],
+    () => (graph && state ? withAttributeNodes(graph, attributeKinds, state.collections) : null),
+    [graph, state, attributeKinds],
   );
   // Colours come from every project, archived memories included, so neither filters nor the archived toggle recolour anything.
   const projectAccents = useMemo(() => {
@@ -191,7 +194,7 @@ export function GraphPage() {
     const attr = shown.nodes.find((n) => n.id === id && n.attr);
     if (attr) {
       if (linkMode) {
-        setLinkNotice(`"${attr.title}" is a ${attr.attr}, not a memory, so it cannot be linked.`);
+        setLinkNotice(`"${attr.title}" is ${attr.attrRole === "category" ? "a category" : `a ${attr.attr}`}, not a memory, so it cannot be linked.`);
         return;
       }
       setSelectedEdgeId(null);
@@ -444,9 +447,14 @@ export function GraphPage() {
               isolated={isolated}
               selectedHub={selectedHub}
               availableKinds={availableKinds}
-              attributeKind={attributeKind}
-              onChooseKind={(kind) => {
-                setChosenKind(kind);
+              attributeKinds={attributeKinds}
+              onToggleKind={(kind, on) => {
+                setChosenKinds((prev) => {
+                  const next = new Set(prev);
+                  if (on) next.add(kind);
+                  else next.delete(kind);
+                  return next;
+                });
                 setAttributeId(null);
               }}
               selectedAttribute={selectedAttribute}

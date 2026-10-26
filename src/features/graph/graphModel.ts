@@ -28,13 +28,15 @@ export interface GraphNode {
   projectName?: string | null;
   /** Synthetic project hub (id `project:<projectId>`, or `project:<key>` for a prefix-only key with no Project): no memory is titled like the project yet. Never a real memory id. */
   virtual?: boolean;
-  /** Optional big hub (see `withAttributeNodes`): a collection, type, tag or status value shared by memories, drawn around them. Not a memory. */
+  /** Optional attribute node (see `withAttributeNodes`): a big category hub (Types, Collections, ...) or a small value node (one collection, type, tag or status). Not a memory. */
   attr?: AttributeKind;
+  /** Role of an attribute node: the big category hub, or a small value node around it. */
+  attrRole?: "category" | "value";
 }
 
 export type AttributeKind = "collection" | "type" | "tag" | "status";
 export const ATTRIBUTE_KINDS: readonly AttributeKind[] = ["collection", "type", "tag", "status"];
-/** At most this many attribute nodes per kind (most-used first). */
+/** At most this many value nodes per category (most-used first). */
 export const MAX_ATTRIBUTE_NODES = 60;
 
 /** Id prefix of virtual project hubs; real memory ids never use it. */
@@ -52,8 +54,10 @@ export interface GraphEdge {
   prefix?: boolean;
   /** View-only edge computed from titles; has no stored relation (never removable). */
   derived?: boolean;
-  /** Memory -> attribute node link (see `withAttributeNodes`): decoration only, never a relation. */
+  /** Memory -> value node link, or value node -> category hub link (see `withAttributeNodes`): decoration only, never a relation. */
   attribute?: boolean;
+  /** With `attribute`: this is a value node -> category hub link (the rest are memory -> value links). */
+  category?: boolean;
 }
 
 export interface Graph {
@@ -131,7 +135,7 @@ export function buildGraph(state: WorkspaceState, opts: { showArchived?: boolean
 
 type AttributeGroup = { kind: AttributeKind; key: string; label: string; members: string[] };
 
-/** Attribute values of one kind used by memories (never hubs or other attribute nodes), grouped by hub id, in a single pass. */
+/** Attribute values of one kind used by memories (never hubs or other attribute nodes), grouped by value node id, in a single pass. */
 function groupAttributes(graph: Graph, kind: AttributeKind, collections: Record<string, { name: string }>): Map<string, AttributeGroup> {
   const groups = new Map<string, AttributeGroup>();
   const add = (m: GraphNode, key: string, label: string) => {
@@ -162,45 +166,63 @@ function groupAttributes(graph: Graph, kind: AttributeKind, collections: Record<
   return groups;
 }
 
-/** Kinds that have at least one attribute hub with a memory in this (already filtered) graph: the only ones worth offering. */
+/** Kinds that have at least one value with a linked memory in this (already filtered) graph: the only categories worth offering. */
 export function availableAttributeKinds(graph: Graph, collections: Record<string, { name: string }>): AttributeKind[] {
   return ATTRIBUTE_KINDS.filter((k) => groupAttributes(graph, k, collections).size > 0);
 }
 
+export const ATTRIBUTE_CATEGORY_LABEL: Record<AttributeKind, string> = { collection: "Collections", type: "Types", status: "Statuses", tag: "Tags" };
+
+/** Id of a category hub / value node: never a memory id (`mem_...`) nor a project hub id (`project:...`). */
+export const categoryNodeId = (kind: AttributeKind): string => `category:${kind}`;
+
 /**
- * Adds big attribute hubs for ONE kind (collection / type / tag / status) and light edges memory -> hub. A hub exists only
- * when at least one memory in `graph` has that value, and the MAX_ATTRIBUTE_NODES most-used values are kept. Memories only
- * (never project hubs). Existing nodes and edges are untouched; with no kind (or no hub) the same graph is returned.
- * Pass the already filtered graph: hubs whose members are all filtered out then never appear.
+ * Adds, for each chosen category (collection / type / status / tag), one big category hub (`category:<kind>`) with a small
+ * value node per value that has at least one linked memory in `graph` (`collection:<id>`, `type:<type>`, `status:<s>`,
+ * `tag:<tag>`; the MAX_ATTRIBUTE_NODES most-used per category). Edges: value -> category hub (`category`), and a light link
+ * memory -> its value nodes (`attribute`). Memories only (never project hubs). Existing nodes and edges are untouched and an
+ * empty selection (or nothing to show) returns the very same graph. Pass the already filtered graph.
  */
-export function withAttributeNodes(graph: Graph, kind: AttributeKind | null, collections: Record<string, { name: string }>): Graph {
-  if (kind === null) return graph;
-  const chosen = [...groupAttributes(graph, kind, collections).entries()]
-    .sort((a, b) => b[1].members.length - a[1].members.length || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
-    .slice(0, MAX_ATTRIBUTE_NODES)
-    .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
-  if (chosen.length === 0) return graph;
+export function withAttributeNodes(graph: Graph, kinds: Iterable<AttributeKind>, collections: Record<string, { name: string }>): Graph {
+  const wanted = new Set(kinds);
+  if (wanted.size === 0) return graph;
+  const taken = new Set(graph.nodes.map((n) => n.id));
   const nodes: GraphNode[] = [];
   const edges: GraphEdge[] = [];
-  for (const [id, g] of chosen) {
-    nodes.push({
-      id,
-      title: g.label,
-      type: kind,
-      status: "saved",
-      archived: false,
-      collectionId: null,
-      tags: [],
-      degree: g.members.length,
-      childCount: g.members.length,
-      isProject: false,
-      project: null,
-      attr: kind,
-    });
-    for (const memberId of g.members) {
-      edges.push({ id: `attr:${id}:${memberId}`, source: memberId, target: id, label: kind, origin: "process", demo: false, attribute: true });
+  const make = (id: string, title: string, kind: AttributeKind, role: "category" | "value", count: number): GraphNode => ({
+    id,
+    title,
+    type: kind,
+    status: "saved",
+    archived: false,
+    collectionId: null,
+    tags: [],
+    degree: count,
+    childCount: count,
+    isProject: false,
+    project: null,
+    attr: kind,
+    attrRole: role,
+  });
+  for (const kind of ATTRIBUTE_KINDS) {
+    if (!wanted.has(kind)) continue;
+    const chosen = [...groupAttributes(graph, kind, collections).entries()]
+      .filter(([id]) => !taken.has(id))
+      .sort((a, b) => b[1].members.length - a[1].members.length || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+      .slice(0, MAX_ATTRIBUTE_NODES)
+      .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+    const hubId = categoryNodeId(kind);
+    if (chosen.length === 0 || taken.has(hubId)) continue;
+    nodes.push(make(hubId, ATTRIBUTE_CATEGORY_LABEL[kind], kind, "category", chosen.length));
+    for (const [id, g] of chosen) {
+      nodes.push(make(id, g.label, kind, "value", g.members.length));
+      edges.push({ id: `cat:${id}`, source: id, target: hubId, label: kind, origin: "process", demo: false, attribute: true, category: true });
+      for (const memberId of g.members) {
+        edges.push({ id: `attr:${id}:${memberId}`, source: memberId, target: id, label: kind, origin: "process", demo: false, attribute: true });
+      }
     }
   }
+  if (nodes.length === 0) return graph;
   return { nodes: [...graph.nodes, ...nodes], edges: [...graph.edges, ...edges] };
 }
 

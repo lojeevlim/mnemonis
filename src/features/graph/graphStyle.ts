@@ -70,11 +70,15 @@ export const ACCENT = "var(--color-accent-500, #64748b)";
 /** Project hub radius: grows with the child count, capped. */
 const projectRadius = (childCount: number): number => Math.min(40, 14 + Math.sqrt(childCount) * 4);
 
-/** Attribute hubs are 35% bigger than a project hub with the same member count (cap 54 vs 40), so they always read as the biggest circles. */
+/** Category hubs are 35% bigger than a project hub with the same member count (cap 54 vs 40), so they always read as the biggest circles. */
 export const ATTRIBUTE_HUB_SCALE = 1.35;
 
-/** Node radius grows with degree (capped); project hubs are bigger and grow with their child count (capped); attribute hubs are bigger still. */
-export function nodeRadius(node: Pick<GraphNode, "degree"> & Partial<Pick<GraphNode, "childCount" | "isProject" | "attr">>): number {
+/** Radius of an attribute value node: clearly below the smallest memory node (7). */
+export const VALUE_NODE_RADIUS = 4.5;
+
+/** Node radius grows with degree (capped); project hubs are bigger and grow with their child count (capped); category hubs are bigger still; value nodes are smaller than any memory. */
+export function nodeRadius(node: Pick<GraphNode, "degree"> & Partial<Pick<GraphNode, "childCount" | "isProject" | "attr" | "attrRole">>): number {
+  if (node.attr && node.attrRole === "value") return VALUE_NODE_RADIUS;
   if (node.attr) return Math.min(54, ATTRIBUTE_HUB_SCALE * (14 + Math.sqrt(node.childCount ?? 0) * 4));
   if (node.isProject) return projectRadius(node.childCount ?? 0);
   return 7 + Math.min(10, node.degree * 1.5);
@@ -88,5 +92,3 @@ export const ATTRIBUTE_DASH: Record<AttributeKind, string | undefined> = {
   status: "10 3 2 3",
 };
 
-/** Kind label drawn inside a hub. */
-export const ATTRIBUTE_KIND_LABEL: Record<AttributeKind, string> = { collection: "Collection", type: "Type", tag: "Tag", status: "Status" };

@@ -456,6 +456,7 @@ describe("node.project", () => {
 
 describe("withAttributeNodes", () => {
   const collections = { c1: { name: "Work" }, __proto__x: { name: "Odd" } };
+  const ALL = ["collection", "type", "tag", "status"] as const;
   const base = (): Graph => ({
     nodes: [
       node("a", { collectionId: "c1", tags: ["Red", "blue"], type: "fact" }),
@@ -465,105 +466,146 @@ describe("withAttributeNodes", () => {
     ],
     edges: [edge("a", "b")],
   });
-  const ids = (g: Graph) => g.nodes.filter((n) => n.attr).map((n) => n.id).sort();
-  const hubEdges = (g: Graph, hub: string) => g.edges.filter((e) => e.attribute && e.target === hub).map((e) => e.source).sort();
+  const values = (g: Graph) => g.nodes.filter((n) => n.attrRole === "value").map((n) => n.id).sort();
+  const categories = (g: Graph) => g.nodes.filter((n) => n.attrRole === "category").map((n) => n.id).sort();
+  const links = (g: Graph, value: string) => g.edges.filter((e) => e.attribute && !e.category && e.target === value).map((e) => e.source).sort();
 
-  it("returns the very same graph with no kind (nodes and edges byte-identical)", () => {
+  it("returns the very same graph with no category (nodes and edges byte-identical)", () => {
     const g = base();
     const before = JSON.stringify(g);
-    expect(withAttributeNodes(g, null, collections)).toBe(g);
-    expect(JSON.stringify(withAttributeNodes(g, null, collections))).toBe(before);
+    expect(withAttributeNodes(g, [], collections)).toBe(g);
+    expect(withAttributeNodes(g, new Set(), collections)).toBe(g);
+    expect(JSON.stringify(withAttributeNodes(g, [], collections))).toBe(before);
   });
 
-  it("adds collection hubs and member edges; memories without a collection get none; project hubs never", () => {
-    const g = withAttributeNodes(base(), "collection", collections);
-    expect(ids(g)).toEqual(["collection:c1"]);
+  it("adds a Collections hub, a small node per collection and a link from each memory; memories without a collection and project hubs get none", () => {
+    const g = withAttributeNodes(base(), ["collection"], collections);
+    expect(categories(g)).toEqual(["category:collection"]);
+    expect(g.nodes.find((n) => n.id === "category:collection")!.title).toBe("Collections");
+    expect(values(g)).toEqual(["collection:c1"]);
     expect(g.nodes.find((n) => n.id === "collection:c1")!.title).toBe("Work");
-    expect(hubEdges(g, "collection:c1")).toEqual(["a", "b"]);
+    expect(links(g, "collection:c1")).toEqual(["a", "b"]);
   });
 
-  it("adds type hubs", () => {
-    const g = withAttributeNodes(base(), "type", collections);
-    expect(ids(g)).toEqual(["type:fact", "type:task"]); // not the project hub's "project" type
-    expect(hubEdges(g, "type:fact")).toEqual(["a", "c"]);
+  it("adds type nodes (never the project hub's own type)", () => {
+    const g = withAttributeNodes(base(), ["type"], collections);
+    expect(categories(g)).toEqual(["category:type"]);
+    expect(values(g)).toEqual(["type:fact", "type:task"]);
+    expect(links(g, "type:fact")).toEqual(["a", "c"]);
   });
 
-  it("adds status hubs derived from the archived flag and status", () => {
-    const g = withAttributeNodes(base(), "status", collections);
-    expect(ids(g)).toEqual(["status:archived", "status:pending", "status:saved"]);
-    expect(g.edges.find((e) => e.attribute && e.source === "c")!.target).toBe("status:archived");
+  it("adds status nodes derived from the archived flag and status", () => {
+    const g = withAttributeNodes(base(), ["status"], collections);
+    expect(values(g)).toEqual(["status:archived", "status:pending", "status:saved"]);
+    expect(g.edges.find((e) => e.attribute && !e.category && e.source === "c")!.target).toBe("status:archived");
   });
 
-  it("adds a tag hub for every tag with a memory (even one), case-insensitively and once per memory", () => {
-    const g = withAttributeNodes(base(), "tag", collections);
-    expect(ids(g)).toEqual(["tag:blue", "tag:red", "tag:solo"]);
-    expect(hubEdges(g, "tag:red")).toEqual(["a", "b", "c"]);
-    expect(hubEdges(g, "tag:solo")).toEqual(["c"]);
+  it("adds a tag node for every tag with a memory (even one), case-insensitively and once per memory", () => {
+    const g = withAttributeNodes(base(), ["tag"], collections);
+    expect(values(g)).toEqual(["tag:blue", "tag:red", "tag:solo"]);
+    expect(links(g, "tag:red")).toEqual(["a", "b", "c"]);
+    expect(links(g, "tag:solo")).toEqual(["c"]);
   });
 
-  it("only ever adds one kind of hub at a time and every member sits on its hub", () => {
-    for (const kind of ["collection", "type", "tag", "status"] as const) {
-      const g = withAttributeNodes(base(), kind, collections);
-      expect(g.nodes.filter((n) => n.attr).every((n) => n.attr === kind && n.id.startsWith(`${kind}:`))).toBe(true);
-      for (const e of g.edges.filter((x) => x.attribute)) expect(e.target.startsWith(`${kind}:`)).toBe(true);
+  it("joins every value node to its category hub with one edge, and the hub counts its values", () => {
+    const g = withAttributeNodes(base(), ALL, collections);
+    expect(categories(g)).toEqual(["category:collection", "category:status", "category:tag", "category:type"]);
+    for (const hub of g.nodes.filter((n) => n.attrRole === "category")) {
+      const kind = hub.attr!;
+      const own = g.edges.filter((e) => e.category && e.target === hub.id);
+      expect(own.map((e) => e.source).sort()).toEqual(values(g).filter((id) => id.startsWith(`${kind}:`)));
+      expect(hub.childCount).toBe(own.length);
+      expect(own.every((e) => e.attribute)).toBe(true);
+    }
+    // Every other edge touching a value node is a memory -> value link.
+    for (const e of g.edges.filter((x) => x.attribute && !x.category)) {
+      expect(g.nodes.find((n) => n.id === e.source)!.attr).toBeUndefined();
+      expect(g.nodes.find((n) => n.id === e.target)!.attrRole).toBe("value");
     }
   });
 
-  it("makes hubs bigger by member count and never creates a hub without members", () => {
-    const g = withAttributeNodes(base(), "type", collections);
-    for (const n of g.nodes.filter((x) => x.attr)) {
-      expect(n.childCount).toBe(hubEdges(g, n.id).length);
+  it("categories are independent: only the chosen ones are added", () => {
+    const g = withAttributeNodes(base(), ["type", "tag"], collections);
+    expect(categories(g)).toEqual(["category:tag", "category:type"]);
+    expect(values(g).every((id) => id.startsWith("tag:") || id.startsWith("type:"))).toBe(true);
+    expect(g.nodes.every((n) => !n.attr || n.attr === "type" || n.attr === "tag")).toBe(true);
+  });
+
+  it("never creates a value without a linked memory nor a category without a value", () => {
+    const g = withAttributeNodes(base(), ALL, collections);
+    for (const n of g.nodes.filter((x) => x.attrRole === "value")) {
+      expect(n.childCount).toBe(links(g, n.id).length);
       expect(n.childCount).toBeGreaterThan(0);
     }
+    for (const n of g.nodes.filter((x) => x.attrRole === "category")) expect(n.childCount).toBeGreaterThan(0);
   });
 
   it("leaves existing nodes, edges, degrees and counts untouched", () => {
     const g = base();
-    for (const kind of ["collection", "type", "tag", "status"] as const) {
-      const out = withAttributeNodes(g, kind, collections);
-      expect(out.nodes.slice(0, g.nodes.length)).toEqual(g.nodes);
-      expect(out.edges.slice(0, g.edges.length)).toEqual(g.edges);
-      const memories = out.nodes.filter((n) => !n.attr);
-      expect(connectedComponents(memories, out.edges.filter((e) => !e.attribute))).toEqual(connectedComponents(g.nodes, g.edges));
-      expect(new Set(out.nodes.map((n) => n.id)).size).toBe(out.nodes.length);
-    }
+    const out = withAttributeNodes(g, ALL, collections);
+    expect(out.nodes.slice(0, g.nodes.length)).toEqual(g.nodes);
+    expect(out.edges.slice(0, g.edges.length)).toEqual(g.edges);
+    const memories = out.nodes.filter((n) => !n.attr);
+    expect(memories).toEqual(g.nodes);
+    expect(connectedComponents(memories, out.edges.filter((e) => !e.attribute))).toEqual(connectedComponents(g.nodes, g.edges));
+    expect(new Set(out.nodes.map((n) => n.id)).size).toBe(out.nodes.length);
   });
 
-  it("caps each kind at the most-used hubs", () => {
+  it("caps value nodes per category at the most-used ones", () => {
     const nodes = Array.from({ length: 100 }, (_, i) => node(`m${i}`, { collectionId: `col${i}`, tags: [`t${i}`, "common", `pair${i % 50}`, `alt${i % 49}`] }));
     const many = Object.fromEntries(nodes.map((n) => [n.collectionId!, { name: n.collectionId! }]));
-    const gc = withAttributeNodes({ nodes, edges: [] }, "collection", many);
-    const gt = withAttributeNodes({ nodes, edges: [] }, "tag", many);
-    expect(ids(gc)).toHaveLength(MAX_ATTRIBUTE_NODES);
-    expect(ids(gt)).toHaveLength(MAX_ATTRIBUTE_NODES);
-    expect(ids(gt)).toContain("tag:common"); // most used survives the cap
+    const g = withAttributeNodes({ nodes, edges: [] }, ["collection", "tag"], many);
+    expect(values(g).filter((id) => id.startsWith("collection:"))).toHaveLength(MAX_ATTRIBUTE_NODES);
+    const tags = values(g).filter((id) => id.startsWith("tag:"));
+    expect(tags).toHaveLength(MAX_ATTRIBUTE_NODES);
+    expect(tags).toContain("tag:common"); // most used survives the cap
+    expect(g.nodes.find((n) => n.id === "category:tag")!.childCount).toBe(MAX_ATTRIBUTE_NODES);
+  });
+
+  it("builds in linear time on a large graph", () => {
+    const nodes = Array.from({ length: 5000 }, (_, i) => node(`m${i}`, { collectionId: `c${i % 40}`, tags: [`t${i % 50}`, `u${i % 7}`] }));
+    const many = Object.fromEntries(Array.from({ length: 40 }, (_, i) => [`c${i}`, { name: `C${i}` }]));
+    const t0 = performance.now();
+    const g = withAttributeNodes({ nodes, edges: [] }, ALL, many);
+    expect(performance.now() - t0).toBeLessThan(1000);
+    expect(g.edges.filter((e) => e.attribute && !e.category)).toHaveLength(5000 * 5); // collection + type + status + 2 tags per memory
   });
 
   it("uses safe keys for odd names and unknown collections", () => {
     const odd = { nodes: [node("a", { collectionId: "__proto__", tags: ["__proto__", "constructor"] }), node("b", { collectionId: "ghost", tags: ["__proto__", "constructor"] })], edges: [] };
-    const gc = withAttributeNodes(odd, "collection", collections);
-    expect(ids(gc)).toEqual(["collection:__proto__", "collection:ghost"]);
+    const gc = withAttributeNodes(odd, ["collection"], collections);
+    expect(values(gc)).toEqual(["collection:__proto__", "collection:ghost"]);
     expect(gc.nodes.find((n) => n.id === "collection:__proto__")!.title).toBe("Unknown collection");
-    expect(ids(withAttributeNodes(odd, "tag", collections))).toEqual(["tag:__proto__", "tag:constructor"]);
+    expect(values(withAttributeNodes(odd, ["tag"], collections))).toEqual(["tag:__proto__", "tag:constructor"]);
   });
 
-  it("hides hubs whose members are all filtered out (filter first, then add)", () => {
+  it("ids never collide with memory or project ids (prefixes, and a clashing memory id is never overwritten)", () => {
+    const g = withAttributeNodes(base(), ALL, collections);
+    const added = g.nodes.slice(base().nodes.length);
+    expect(added.every((n) => /^(category|collection|type|status|tag):/.test(n.id) && !n.id.startsWith("project:"))).toBe(true);
+    const clash: Graph = { nodes: [node("type:fact", { type: "fact" }), node("a", { type: "fact" })], edges: [] };
+    const out = withAttributeNodes(clash, ["type"], collections);
+    expect(new Set(out.nodes.map((n) => n.id)).size).toBe(out.nodes.length);
+    expect(out.nodes.find((n) => n.id === "type:fact")!.attr).toBeUndefined();
+  });
+
+  it("hides values whose memories are all filtered out (filter first, then add)", () => {
     const filtered = filterGraph(base(), { type: "task" });
-    expect(ids(withAttributeNodes(filtered, "type", collections))).toEqual(["type:task"]);
-    expect(ids(withAttributeNodes(filtered, "collection", collections))).toEqual(["collection:c1"]);
-    expect(ids(withAttributeNodes(filtered, "tag", collections))).toEqual(["tag:red"]);
+    expect(values(withAttributeNodes(filtered, ["type"], collections))).toEqual(["type:task"]);
+    expect(values(withAttributeNodes(filtered, ["collection"], collections))).toEqual(["collection:c1"]);
+    expect(values(withAttributeNodes(filtered, ["tag"], collections))).toEqual(["tag:red"]);
   });
 
-  it("returns the same graph when the kind has no hub", () => {
+  it("returns the same graph when no chosen category has a value", () => {
     const g: Graph = { nodes: [node("a", { tags: [] })], edges: [] };
-    expect(withAttributeNodes(g, "collection", collections)).toBe(g);
-    expect(withAttributeNodes(g, "tag", collections)).toBe(g);
+    expect(withAttributeNodes(g, ["collection"], collections)).toBe(g);
+    expect(withAttributeNodes(g, ["collection", "tag"], collections)).toBe(g);
   });
 });
 
 describe("availableAttributeKinds", () => {
   const collections = { c1: { name: "Work" } };
-  it("lists only kinds with at least one hub", () => {
+  it("lists only categories with at least one value that has a linked memory", () => {
     const none: Graph = { nodes: [node("a", { tags: [] })], edges: [] };
     expect(availableAttributeKinds(none, collections)).toEqual(["type", "status"]);
     const all: Graph = { nodes: [node("a", { tags: ["x"], collectionId: "c1" })], edges: [] };

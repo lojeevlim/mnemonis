@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { PROJECT_ACCENTS, PROJECT_SHADES, accentFill, assignProjectAccents, hashKey, nodeRadius, ATTRIBUTE_HUB_SCALE } from "./graphStyle";
+import { PROJECT_ACCENTS, PROJECT_SHADES, accentFill, assignProjectAccents, hashKey, nodeRadius, ATTRIBUTE_HUB_SCALE, VALUE_NODE_RADIUS } from "./graphStyle";
 
 describe("nodeRadius", () => {
   it("keeps ordinary nodes at the degree-based size", () => {
@@ -102,20 +102,30 @@ describe("accentFill", () => {
   });
 });
 
-describe("nodeRadius for attribute hubs", () => {
-  it("is bigger than a project hub with the same member count, up to the caps", () => {
+describe("nodeRadius for category hubs and value nodes", () => {
+  it("category hubs are bigger than a project hub with the same member count, up to the caps", () => {
     for (const n of [0, 1, 4, 9, 30, 100, 1000]) {
       const project = nodeRadius({ degree: n, childCount: n, isProject: true });
-      const attr = nodeRadius({ degree: n, childCount: n, attr: "tag" });
-      expect(attr).toBeGreaterThan(project);
-      expect(attr).toBeGreaterThanOrEqual(project * 1.3);
+      const hub = nodeRadius({ degree: n, childCount: n, attr: "tag", attrRole: "category" });
+      expect(hub).toBeGreaterThan(project);
+      expect(hub).toBeGreaterThanOrEqual(project * 1.3);
     }
-    expect(nodeRadius({ degree: 4, childCount: 4, attr: "type" })).toBeCloseTo(ATTRIBUTE_HUB_SCALE * (14 + 8));
+    expect(nodeRadius({ degree: 4, childCount: 4, attr: "type", attrRole: "category" })).toBeCloseTo(ATTRIBUTE_HUB_SCALE * (14 + 8));
   });
 
-  it("grows with members but is capped, and is bigger than any memory", () => {
-    expect(nodeRadius({ degree: 9, childCount: 9, attr: "type" })).toBeGreaterThan(nodeRadius({ degree: 1, childCount: 1, attr: "type" }));
-    expect(nodeRadius({ degree: 5000, childCount: 5000, attr: "status" })).toBe(54);
-    expect(nodeRadius({ degree: 1, childCount: 1, attr: "type" })).toBeGreaterThan(nodeRadius({ degree: 99 }));
+  it("category hubs grow with their values but are capped, and are bigger than any memory", () => {
+    const hub = (n: number) => nodeRadius({ degree: n, childCount: n, attr: "type", attrRole: "category" });
+    expect(hub(9)).toBeGreaterThan(hub(1));
+    expect(hub(5000)).toBe(54);
+    expect(hub(1)).toBeGreaterThan(nodeRadius({ degree: 99 }));
+  });
+
+  it("value nodes are a fixed size clearly smaller than the smallest memory node, whatever their member count", () => {
+    const smallestMemory = nodeRadius({ degree: 0 });
+    for (const n of [0, 1, 50, 5000]) {
+      const r = nodeRadius({ degree: n, childCount: n, attr: "collection", attrRole: "value" });
+      expect(r).toBe(VALUE_NODE_RADIUS);
+      expect(r).toBeLessThanOrEqual(smallestMemory - 2);
+    }
   });
 });

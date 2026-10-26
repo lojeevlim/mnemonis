@@ -1,7 +1,7 @@
 import { useMemo } from "react";
-import { Badge, Button, Radio, RadioGroup } from "lojee-ui";
+import { Badge, Button, Checkbox } from "lojee-ui";
 import { parseTitlePrefix } from "../../domain/titlePrefix";
-import { MAX_ATTRIBUTE_NODES, type AttributeKind, type GraphEdge, type GraphNode } from "./graphModel";
+import { ATTRIBUTE_KINDS, MAX_ATTRIBUTE_NODES, type AttributeKind, type GraphEdge, type GraphNode } from "./graphModel";
 import { AMBER, NEUTRAL, accentFill, ATTRIBUTE_DASH, type ProjectAccent } from "./graphStyle";
 
 /** Colour dot for a node's project (neutral when it has none). `data-accent` scopes the accent variable to the dot. */
@@ -49,10 +49,10 @@ function legendProjects(nodes: GraphNode[]): { key: string; name: string; count:
 }
 
 const KIND_TOGGLE: Record<AttributeKind, { label: string; legend: string; hint: string }> = {
-  collection: { label: "Collections", legend: "Collection", hint: `Up to ${MAX_ATTRIBUTE_NODES} collections, most used first.` },
-  type: { label: "Types", legend: "Type", hint: `Up to ${MAX_ATTRIBUTE_NODES} types, most used first.` },
-  tag: { label: "Tags", legend: "Tag", hint: `Up to ${MAX_ATTRIBUTE_NODES} tags, most used first.` },
-  status: { label: "Statuses", legend: "Status", hint: "Saved, waiting for review or archived." },
+  collection: { label: "Collections", legend: "Collections", hint: `Up to ${MAX_ATTRIBUTE_NODES} collections, most used first.` },
+  type: { label: "Types", legend: "Types", hint: `Up to ${MAX_ATTRIBUTE_NODES} types, most used first.` },
+  tag: { label: "Tags", legend: "Tags", hint: `Up to ${MAX_ATTRIBUTE_NODES} tags, most used first.` },
+  status: { label: "Statuses", legend: "Statuses", hint: "Saved, waiting for review or archived." },
 };
 
 const NO_ACCENTS: ReadonlyMap<string, ProjectAccent> = new Map();
@@ -70,11 +70,11 @@ interface Props {
   creatingHub?: boolean;
   hubNotice?: string | null;
   onCreateHub?: (hub: GraphNode) => void;
-  /** Kinds that have at least one hub to show (others are not offered), the one currently drawn (null = none) and its setter. */
+  /** Categories that have at least one value to show (others are not offered), the ones currently drawn, and the toggle for them. */
   availableKinds?: readonly AttributeKind[];
-  attributeKind?: AttributeKind | null;
-  onChooseKind?: (kind: AttributeKind | null) => void;
-  /** Selected attribute node and its member memories. */
+  attributeKinds?: ReadonlySet<AttributeKind>;
+  onToggleKind?: (kind: AttributeKind, on: boolean) => void;
+  /** Selected attribute node and its members: memories of a value node, value nodes of a category hub. */
   selectedAttribute?: { node: GraphNode; members: GraphNode[] } | null;
   onFocusCluster: (index: number) => void;
   onOpenMemory: (id: string) => void;
@@ -93,8 +93,8 @@ export function GraphSidePanel({
   hubNotice = null,
   onCreateHub,
   availableKinds = [],
-  attributeKind = null,
-  onChooseKind,
+  attributeKinds,
+  onToggleKind,
   selectedAttribute = null,
   onFocusCluster,
   onOpenMemory,
@@ -106,17 +106,14 @@ export function GraphSidePanel({
 
   return (
     <aside aria-label="Graph details" className="space-y-4 text-sm">
-      {onChooseKind && availableKinds.length > 0 && (
+      {onToggleKind && availableKinds.length > 0 && (
         <Section title="Show as nodes">
-          <div role="group" aria-label="Show as nodes">
-            <RadioGroup orientation="horizontal">
-              <Radio name="graph-attribute-kind" label="None" checked={attributeKind === null} onChange={() => onChooseKind(null)} />
-              {availableKinds.map((k) => (
-                <span key={k} title={KIND_TOGGLE[k].hint}>
-                  <Radio name="graph-attribute-kind" label={KIND_TOGGLE[k].label} checked={attributeKind === k} onChange={() => onChooseKind(k)} />
-                </span>
-              ))}
-            </RadioGroup>
+          <div className="flex flex-wrap gap-x-4 gap-y-1" role="group" aria-label="Show as nodes">
+            {availableKinds.map((k) => (
+              <span key={k} title={KIND_TOGGLE[k].hint}>
+                <Checkbox label={KIND_TOGGLE[k].label} checked={!!attributeKinds?.has(k)} onChange={(e) => onToggleKind(k, e.target.checked)} />
+              </span>
+            ))}
           </div>
         </Section>
       )}
@@ -157,14 +154,20 @@ export function GraphSidePanel({
       )}
 
       {selectedAttribute && (
-        <Section title={`Selected ${selectedAttribute.node.attr}`}>
+        <Section title={selectedAttribute.node.attrRole === "category" ? `Selected ${selectedAttribute.node.title.toLowerCase()}` : `Selected ${selectedAttribute.node.attr}`}>
           <div className="space-y-2 rounded-lg border border-border bg-surface-muted p-2" data-testid="selected-attribute">
             <p className="text-fg">
               <span className="font-medium">{selectedAttribute.node.title}</span> · {selectedAttribute.members.length}{" "}
-              {selectedAttribute.members.length === 1 ? "memory" : "memories"}
+              {selectedAttribute.node.attrRole === "category"
+                ? selectedAttribute.members.length === 1 ? "value" : "values"
+                : selectedAttribute.members.length === 1 ? "memory" : "memories"}
             </p>
-            <ul className="space-y-1" aria-label="Attribute memories">
-              {selectedAttribute.members.map((m) => (
+            <ul className="space-y-1" aria-label={selectedAttribute.node.attrRole === "category" ? "Attribute values" : "Attribute memories"}>
+              {selectedAttribute.members.map((m) => m.attr ? (
+                <li key={m.id} className="px-2 py-1 text-xs text-fg">
+                  <span className="min-w-0 truncate">{m.title}</span> · {m.degree}
+                </li>
+              ) : (
                 <li key={m.id}>
                   <button
                     type="button"
@@ -302,14 +305,15 @@ export function GraphSidePanel({
             </svg>
             Archived (dashed, dim)
           </li>
-          {attributeKind && (
-            <li className="flex items-center gap-2" data-legend-attribute={attributeKind}>
-              <svg width="16" height="16" viewBox="-8 -8 16 16" aria-hidden="true">
-                <circle r="6.5" fill={NEUTRAL} fillOpacity="0.12" stroke={NEUTRAL} strokeWidth="1.5" strokeDasharray={ATTRIBUTE_DASH[attributeKind]} />
+          {ATTRIBUTE_KINDS.filter((k) => attributeKinds?.has(k)).map((k) => (
+            <li key={k} className="flex items-center gap-2" data-legend-attribute={k}>
+              <svg width="18" height="18" viewBox="-9 -9 18 18" aria-hidden="true">
+                <circle r="8" fill={NEUTRAL} fillOpacity="0.12" stroke={NEUTRAL} strokeWidth="1.5" strokeDasharray={ATTRIBUTE_DASH[k]} />
+                <circle r="2.5" fill={NEUTRAL} fillOpacity="0.55" stroke={NEUTRAL} strokeWidth="1" />
               </svg>
-              Biggest circle: a {KIND_TOGGLE[attributeKind].legend.toLowerCase()}, with its memories around it (dotted line)
+              Big circle: {KIND_TOGGLE[k].legend.toLowerCase()}, one small dot per value (dotted line to its memories)
             </li>
-          )}
+          ))}
           <li>Node size grows with the number of relations.</li>
           <li>Big circle: a project, with its &ldquo;&lt;project&gt;: ...&rdquo; memories around it (dashed line: derived from the title).</li>
           <li className="flex items-center gap-2">

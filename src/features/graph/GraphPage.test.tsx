@@ -506,43 +506,61 @@ describe("Graph: colours per project", () => {
   });
 });
 
-describe("Graph: attribute hubs", () => {
-  const attrEls = (c: HTMLElement, kind?: string) => [...c.querySelectorAll<SVGGElement>(kind ? `[data-attribute="${kind}"]` : "[data-attribute]")];
+describe("Graph: category hubs and value nodes", () => {
+  const attrEls = (c: HTMLElement, kind?: string, role?: string) =>
+    [...c.querySelectorAll<SVGGElement>(`[data-attribute${kind ? `="${kind}"` : ""}]${role ? `[data-attribute-role="${role}"]` : ""}`)];
   const radius = (el: Element) => Number(el.querySelector("circle:not(.mn-focus)")!.getAttribute("r"));
 
-  it("offers only kinds that have a hub, plus None, and draws nothing by default", () => {
+  it("offers an independent checkbox per available category, all unchecked, and draws nothing by default", () => {
     const { container } = renderPage();
     expect(attrEls(container)).toHaveLength(0);
     expect(container.querySelectorAll("[data-attr-edge]")).toHaveLength(0);
     const group = screen.getByRole("group", { name: "Show as nodes" });
-    expect(within(group).getByLabelText("None")).toBeChecked();
-    for (const k of ["Collections", "Types", "Statuses", "Tags"]) expect(within(group).getByLabelText(k)).toBeInTheDocument();
+    for (const k of ["Collections", "Types", "Statuses", "Tags"]) expect(within(group).getByLabelText(k)).not.toBeChecked();
+    expect(within(group).queryByLabelText("None")).not.toBeInTheDocument();
   });
 
-  it("shows one kind of hub at a time, as circles bigger than a project hub, with members linked to it", () => {
+  it("shows a big category hub (bigger than a project hub) with small value nodes (smaller than a memory) around it", () => {
     const { container } = renderPage();
     fireEvent.click(screen.getByLabelText("Collections"));
-    const collections = attrEls(container, "collection");
-    expect(collections.length).toBeGreaterThan(0);
-    expect(container.querySelectorAll("[data-attr-edge]").length).toBeGreaterThan(0);
-    expect(collections[0].querySelector("polygon")).toBeNull();
+    const hubs = attrEls(container, "collection", "category");
+    const values = attrEls(container, "collection", "value");
+    expect(hubs.map((h) => h.getAttribute("data-node-id"))).toEqual(["category:collection"]);
+    expect(values.length).toBeGreaterThan(0);
+    expect(hubs[0]).toHaveAttribute("aria-label", expect.stringMatching(/^Collections, \d+ values?$/));
+    expect(hubs[0].textContent).toMatch(/^Collections · \d+$/);
     const projectHub = container.querySelector<SVGGElement>("[data-virtual][data-node-id^='project:']")!;
-    for (const c of collections) expect(radius(c)).toBeGreaterThan(radius(projectHub));
-    // Switching kind replaces the hubs instead of adding to them.
-    fireEvent.click(screen.getByLabelText("Types"));
-    expect(attrEls(container, "collection")).toHaveLength(0);
-    expect(attrEls(container, "type").length).toBeGreaterThan(0);
-    expect(attrEls(container).every((n) => n.getAttribute("data-attribute") === "type")).toBe(true);
-    expect(container.querySelector("[data-legend-attribute=type]")).toBeInTheDocument();
-    // Memory counts and the real memory nodes are unchanged.
-    expect(screen.getByText(/18 memories · 29 relations/)).toBeInTheDocument();
-    expect(nodeEls(container).filter((n) => !n.hasAttribute("data-attribute"))).toHaveLength(18);
-    fireEvent.click(screen.getByLabelText("None"));
-    expect(attrEls(container)).toHaveLength(0);
-    expect(container.querySelector("[data-legend-attribute]")).not.toBeInTheDocument();
+    expect(radius(hubs[0])).toBeGreaterThan(radius(projectHub));
+    const smallestMemory = Math.min(...nodeEls(container).filter((n) => !n.hasAttribute("data-attribute")).map(radius));
+    for (const v of values) expect(radius(v)).toBeLessThan(smallestMemory);
+    // value -> category edges (solid) and memory -> value links (dotted).
+    expect(container.querySelectorAll("[data-attr-edge][data-category-edge]")).toHaveLength(values.length);
+    const memoryLinks = [...container.querySelectorAll("[data-attr-edge]:not([data-category-edge])")];
+    expect(memoryLinks.length).toBeGreaterThan(0);
+    expect(memoryLinks[0]).toHaveAttribute("stroke-dasharray");
+    expect(container.querySelector("[data-attr-edge][data-category-edge]")).not.toHaveAttribute("stroke-dasharray");
+    expect(container.querySelector("[data-legend-attribute=collection]")).toBeInTheDocument();
   });
 
-  it("highlights the members of a clicked hub and lists them without opening a memory", () => {
+  it("categories are independent, and unchecking removes them; memory counts never change", () => {
+    const { container } = renderPage();
+    fireEvent.click(screen.getByLabelText("Collections"));
+    fireEvent.click(screen.getByLabelText("Types"));
+    expect(attrEls(container, undefined, "category").map((n) => n.getAttribute("data-node-id")).sort()).toEqual(["category:collection", "category:type"]);
+    expect(container.querySelector("[data-legend-attribute=collection]")).toBeInTheDocument();
+    expect(container.querySelector("[data-legend-attribute=type]")).toBeInTheDocument();
+    expect(screen.getByText(/18 memories · 29 relations/)).toBeInTheDocument();
+    expect(nodeEls(container).filter((n) => !n.hasAttribute("data-attribute"))).toHaveLength(18);
+    fireEvent.click(screen.getByLabelText("Collections"));
+    expect(attrEls(container, "collection")).toHaveLength(0);
+    expect(attrEls(container, "type", "category")).toHaveLength(1);
+    fireEvent.click(screen.getByLabelText("Types"));
+    expect(attrEls(container)).toHaveLength(0);
+    expect(container.querySelector("[data-legend-attribute]")).not.toBeInTheDocument();
+    expect(container.querySelectorAll("[data-attr-edge]")).toHaveLength(0);
+  });
+
+  it("highlights the memories of a clicked value node and lists them without opening a memory", () => {
     const { container } = renderPage();
     fireEvent.click(screen.getByLabelText("Types"));
     fireEvent.click(nodeEl(container, "type:task"));
@@ -551,12 +569,26 @@ describe("Graph: attribute hubs", () => {
     expect(within(panel).getAllByRole("button")).toHaveLength(2);
     expect(nodeEls(container).filter((n) => n.getAttribute("data-dimmed") === "true").length).toBeGreaterThan(0);
     expect(nodeEl(container, "mem_task_mcp").hasAttribute("data-dimmed")).toBe(false);
+    expect(nodeEl(container, "type:task").hasAttribute("data-dimmed")).toBe(false); // the clicked node itself stays lit
   });
 
-  it("hides hubs whose members are filtered out", () => {
+  it("highlights the value nodes of a clicked category hub", () => {
+    const { container } = renderPage();
+    fireEvent.click(screen.getByLabelText("Types"));
+    const valueIds = attrEls(container, "type", "value").map((n) => n.getAttribute("data-node-id")!);
+    fireEvent.click(nodeEl(container, "category:type"));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    const panel = screen.getByTestId("selected-attribute");
+    expect(within(panel).getAllByRole("listitem")).toHaveLength(valueIds.length);
+    for (const id of valueIds) expect(nodeEl(container, id).hasAttribute("data-dimmed")).toBe(false);
+    expect(nodeEl(container, "mem_task_mcp")).toHaveAttribute("data-dimmed", "true");
+  });
+
+  it("shows only the values whose memories pass the filters", () => {
     const { container } = renderPage("/graph?type=task");
     fireEvent.click(screen.getByLabelText("Types"));
-    expect(attrEls(container, "type").map((n) => n.getAttribute("data-node-id"))).toEqual(["type:task"]);
+    expect(attrEls(container, "type", "value").map((n) => n.getAttribute("data-node-id"))).toEqual(["type:task"]);
+    expect(attrEls(container, "type", "category")).toHaveLength(1);
   });
 
   it("hides the Tags option when no memory has a tag", async () => {

@@ -134,6 +134,15 @@ describe("auto-creation", () => {
     ]);
     expect(code(() => createProject(a.state, ctx, { name: " ALPHA", actor: USER }))).toBe("duplicate_project");
   });
+
+  it("names the default collection after the project's first _ segment", () => {
+    const { state, ctx } = setup();
+    const a = createProject(state, ctx, { name: "payment_backend", actor: USER });
+    expect(a.value.name).toBe("payment_backend");
+    expect(a.state.collections[a.value.collectionId!].name).toBe("payment");
+    const b = createProject(a.state, ctx, { name: "ledger_service_v2", actor: AGENT });
+    expect(b.state.collections[b.value.collectionId!].name).toBe("ledger");
+  });
 });
 
 describe("precedence", () => {

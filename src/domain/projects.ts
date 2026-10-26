@@ -242,6 +242,10 @@ export function projectOfMemory(
 const oldestCollectionFirst = (a: Collection, b: Collection): number =>
   a.createdAt === b.createdAt ? (a.id < b.id ? -1 : a.id > b.id ? 1 : 0) : a.createdAt < b.createdAt ? -1 : 1;
 
+/** The default collection of a project is named by its first "_" segment: "payment_backend" -> "payment". */
+export const collectionNameFor = (projectName: string): string => projectName.split("_")[0].trim() || projectName;
+const collectionKeyFor = (p: Project): string => normalizeTitle(collectionNameFor(p.name));
+
 /** The oldest collection named like `key` that no project owns yet (a user's folder a project may adopt). */
 const adoptableCollection = (state: WorkspaceState, key: string): Collection | undefined =>
   Object.values(state.collections)
@@ -262,17 +266,17 @@ const linkCollection = (state: WorkspaceState, col: Collection, project: Project
  * At the collection cap no folder is created.
  */
 function attachDefaultCollection(state: WorkspaceState, ctx: DomainContext, project: Project, actor: Actor): { state: WorkspaceState; project: Project } {
-  const named = Object.values(state.collections).some((c) => normalizeTitle(c.name) === project.key);
+  const named = Object.values(state.collections).some((c) => normalizeTitle(c.name) === collectionKeyFor(project));
   if (actor.kind === "agent" && named) return { state, project };
-  const adoptable = actor.kind === "user" ? adoptableCollection(state, project.key) : undefined;
+  const adoptable = actor.kind === "user" ? adoptableCollection(state, collectionKeyFor(project)) : undefined;
   if (adoptable) return linkCollection(state, adoptable, project);
   try {
-    assertCollectionRoom(state, project.name);
+    assertCollectionRoom(state, collectionNameFor(project.name));
   } catch (e) {
     if (e instanceof DomainError && e.code === "too_large") return { state, project }; // cap reached: no folder
     throw e;
   }
-  const created = createCollection(state, ctx, { name: project.name });
+  const created = createCollection(state, ctx, { name: collectionNameFor(project.name) });
   return linkCollection(created.state, created.value, project);
 }
 
@@ -375,7 +379,7 @@ export function confirmProject(state: WorkspaceState, args: { id: string; actor:
   requireUser(args.actor);
   const p = getProject(state, args.id);
   if (!p) throw new DomainError("project_not_found", `Project not found: ${args.id}`);
-  if (p.confirmed && (collectionOf(state, p) || !adoptableCollection(state, p.key))) return { state, value: p };
+  if (p.confirmed && (collectionOf(state, p) || !adoptableCollection(state, collectionKeyFor(p)))) return { state, value: p };
   const r = confirmAndAdopt(state, p);
   return { state: r.state, value: r.project };
 }
@@ -394,7 +398,7 @@ function confirmAndAdopt(state: WorkspaceState, p: Project): { state: WorkspaceS
   let next = state;
   let project: Project = { ...p, confirmed: true };
   if (!collectionOf(state, p)) {
-    const adoptable = adoptableCollection(state, p.key);
+    const adoptable = adoptableCollection(state, collectionKeyFor(p));
     if (adoptable) ({ state: next, project } = linkCollection(state, adoptable, project));
   }
   // Confirming a project also acknowledges its (agent-created) organization.
@@ -478,7 +482,7 @@ function pruneProjects(state: WorkspaceState, candidateIds: Iterable<string | nu
     let collections = next.collections;
     const col = collectionOf(next, p);
     const sharedWith = Object.values(projects).some((q) => q.collectionId === p.collectionId);
-    if (col && col.description === "" && normalizeTitle(col.name) === p.key && !refs.collections.has(col.id) && !sharedWith) {
+    if (col && col.description === "" && normalizeTitle(col.name) === collectionKeyFor(p) && !refs.collections.has(col.id) && !sharedWith) {
       collections = { ...collections };
       delete collections[col.id];
     }

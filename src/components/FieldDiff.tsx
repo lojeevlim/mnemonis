@@ -32,7 +32,15 @@ interface FieldDiffProps {
   projects?: Record<string, { name: string }>;
 }
 
-export function FieldDiff({ changes, collections, projects }: FieldDiffProps) {
+/** metadata is always empty in practice, so a metadata row with nothing in it (`—` -> `{}`) is noise. */
+const isEmptyMetadataChange = (c: FieldChange): boolean => {
+  if (c.field !== "metadata") return false;
+  const empty = (v: unknown) => v === undefined || v === null || (typeof v === "object" && Object.keys(v).length === 0);
+  return empty(c.before) && empty(c.after);
+};
+
+export function FieldDiff({ changes: all, collections, projects }: FieldDiffProps) {
+  const changes = all.filter((c) => !isEmptyMetadataChange(c));
   const show = (field: string, v: MemoryFieldValue | undefined) =>
     field === "collectionId" && collections
       ? collectionLabel(collections, v)

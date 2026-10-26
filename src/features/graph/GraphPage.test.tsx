@@ -1,5 +1,5 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
-import { listMemories, listRelations } from "../../domain";
+import { assignProjectOrganization, createOrganization, listMemories, listRelations } from "../../domain";
 import { useWorkspace } from "../../stores/workspaceStore";
 import { nativeSelect, renderAt, resetWorkspace } from "../../test/helpers";
 import { GraphPage } from "./GraphPage";
@@ -619,5 +619,101 @@ describe("Graph: category hubs and value nodes", () => {
     const { container } = renderPage("/graph?tag=no-such-tag");
     expect(attrEls(container)).toHaveLength(0);
     expect(container.querySelector("[data-legend-attribute]")).not.toBeInTheDocument();
+  });
+});
+
+describe("Graph: organization hubs", () => {
+  const radius = (el: Element) => Number(el.querySelector("circle:not(.mn-focus)")!.getAttribute("r"));
+  const user = { kind: "user", name: "ada" } as const;
+
+  /** ROK contains VT (2 memories); Personal contains Mnemo (2); Loose has no project and no organization. */
+  const mk = async () => {
+    await resetWorkspace();
+    const vtP = await store().createProject({ name: "VT" });
+    const mnP = await store().createProject({ name: "Mnemo" });
+    for (const title of ["VT: one", "VT: two"]) await store().createMemory({ title, content: "x", type: "fact", tags: [], projectId: vtP!.id });
+    for (const title of ["Mnemo: a", "Mnemo: b"]) await store().createMemory({ title, content: "x", type: "fact", tags: [], projectId: mnP!.id });
+    for (const title of ["Loose: x", "Loose: y"]) await store().createMemory({ title, content: "x", type: "fact", tags: [], projectId: null });
+    useWorkspace.setState({ state: { ...store().state!, relations: {} } });
+    const ctx = { now: () => "2030-01-01T00:00:00.000Z", newId: (p: string) => `${p}_t${Math.random().toString(36).slice(2, 8)}` };
+    let s = store().state!;
+    const rok = createOrganization(s, ctx, { name: "ROK", actor: user });
+    s = rok.state;
+    const personal = createOrganization(s, ctx, { name: "Personal", actor: user });
+    s = personal.state;
+    s = assignProjectOrganization(s, { projectId: vtP!.id, organizationId: rok.value.id, actor: user }).state;
+    s = assignProjectOrganization(s, { projectId: mnP!.id, organizationId: personal.value.id, actor: user }).state;
+    useWorkspace.setState({ state: s });
+    return { rok: rok.value, personal: personal.value, vt: vtP!.id, mnemo: mnP!.id };
+  };
+  const orgEls = (c: HTMLElement) => [...c.querySelectorAll<SVGGElement>("[data-organization]")];
+
+  it("draws one big hub per organization, labelled with its name and project count, bigger than a project hub", async () => {
+    const { rok, personal, vt } = await mk();
+    const { container } = renderPage();
+    expect(orgEls(container).map((e) => e.getAttribute("data-node-id")).sort()).toEqual([`org:${personal.id}`, `org:${rok.id}`].sort());
+    const hub = nodeEl(container, `org:${rok.id}`);
+    expect(hub).toHaveAttribute("aria-label", "ROK, organization with 1 project");
+    expect(hub.textContent).toBe("ROK · 1 project");
+    expect(radius(hub)).toBeGreaterThan(radius(nodeEl(container, `project:${vt}`)));
+    // neutral: no project colour, and not an attribute node
+    expect(hub).not.toHaveAttribute("data-accent");
+    expect(hub).not.toHaveAttribute("data-attribute");
+    expect(container.querySelector("[data-legend-organization]")).toBeInTheDocument();
+  });
+
+  it("links each project hub to its organization hub; projects without an organization stay unlinked", async () => {
+    const { rok, vt, mnemo } = await mk();
+    const { container } = renderPage();
+    const links = [...container.querySelectorAll("[data-organization-edge]")].map((e) => e.getAttribute("data-organization-edge")).sort();
+    expect(links).toHaveLength(2);
+    expect(links).toContain(`org:${rok.id}:project:${vt}`);
+    expect(links.some((l) => l!.endsWith(`:project:${mnemo}`))).toBe(true);
+    expect(links.some((l) => l!.includes("loose"))).toBe(false);
+    // a decorative line, not a selectable relation
+    expect(container.querySelector("[data-edge-id^='org:']")).toBeNull();
+  });
+
+  it("is not a memory: memory, relation and cluster counts are unchanged, and search ignores it", async () => {
+    await mk();
+    const { container } = renderPage();
+    expect(screen.getByText(/6 memories · 6 relations/)).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Search graph"), { target: { value: "ROK" } });
+    expect(screen.getByText(/0 matches/)).toBeInTheDocument();
+    expect(nodeEl(container, `org:${Object.keys(store().state!.organizations)[0]}`)).toBeDefined();
+  });
+
+  it("clicking an organization highlights its projects and their memories and lists them without opening a memory", async () => {
+    const { rok, vt } = await mk();
+    const { container } = renderPage();
+    const ids = Object.fromEntries(listMemories(store().state!).map((m) => [m.title, m.id]));
+    fireEvent.click(nodeEl(container, `org:${rok.id}`));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    const panel = screen.getByTestId("selected-organization");
+    expect(panel).toHaveTextContent("ROK · 1 project · 2 memories");
+    expect(within(within(panel).getByRole("list", { name: "Organization projects" })).getAllByRole("listitem")).toHaveLength(1);
+    expect(within(panel).getByRole("list", { name: "Organization projects" })).toHaveTextContent("VT");
+    expect(within(within(panel).getByRole("list", { name: "Organization memories" })).getAllByRole("button").map((b) => b.textContent)).toEqual(["VT: one", "VT: two"]);
+    for (const lit of [`org:${rok.id}`, `project:${vt}`, ids["VT: one"], ids["VT: two"]]) expect(nodeEl(container, lit).hasAttribute("data-dimmed")).toBe(false);
+    for (const dim of [ids["Mnemo: a"], ids["Loose: x"]]) expect(nodeEl(container, dim)).toHaveAttribute("data-dimmed", "true");
+    // clicking a listed memory opens it
+    fireEvent.click(within(panel).getByRole("button", { name: "VT: one" }));
+    expect(screen.queryByTestId("selected-organization")).not.toBeInTheDocument();
+  });
+
+  it("refuses to link an organization in link mode", async () => {
+    const { rok } = await mk();
+    const { container } = renderPage();
+    fireEvent.click(screen.getByRole("button", { name: "Link mode" }));
+    fireEvent.click(nodeEl(container, `org:${rok.id}`));
+    expect(screen.getByText(/is an organization, not a memory, so it cannot be linked/)).toBeInTheDocument();
+  });
+
+  it("draws nothing extra (no hub, edge or legend entry) without organizations", async () => {
+    await resetWorkspace({ seed: true });
+    const { container } = renderPage();
+    expect(orgEls(container)).toHaveLength(0);
+    expect(container.querySelector("[data-organization-edge]")).toBeNull();
+    expect(container.querySelector("[data-legend-organization]")).toBeNull();
   });
 });

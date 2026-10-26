@@ -11,6 +11,7 @@ import {
   type Memory,
   type PendingChange,
   type PendingRelation,
+  type Organization,
   type Project,
   type Reassignment,
   type RelationProvenance,
@@ -31,8 +32,14 @@ const PROJECT_ERRORS: Record<string, string> = {
   project_in_use: "This project still has memories or waiting proposals, so it cannot be deleted. Move them to another project first.",
 };
 
+const ORGANIZATION_ERRORS: Record<string, string> = {
+  organization_not_found: "That organization no longer exists. It may have been deleted elsewhere.",
+  duplicate_organization: "An organization with that name already exists. Choose a different name.",
+};
+
 export function errorMessage(e: unknown): string {
   if (e instanceof DomainError && PROJECT_ERRORS[e.code]) return PROJECT_ERRORS[e.code];
+  if (e instanceof DomainError && ORGANIZATION_ERRORS[e.code]) return ORGANIZATION_ERRORS[e.code];
   return e instanceof Error ? e.message : String(e);
 }
 
@@ -115,6 +122,12 @@ export interface WorkspaceStore {
   confirmProject(id: string): Promise<boolean>;
   renameProject(id: string, name: string): Promise<boolean>;
   deleteProject(id: string): Promise<boolean>;
+  /** Organizations (always as the user; errors land in `error`). Resolve true on success; assign: null = no organization. */
+  createOrganization(name: string): Promise<Organization | undefined>;
+  renameOrganization(id: string, name: string): Promise<boolean>;
+  deleteOrganization(id: string): Promise<boolean>;
+  confirmOrganization(id: string): Promise<boolean>;
+  assignProjectOrganization(projectId: string, organizationId: string | null): Promise<boolean>;
   /** Files Unsorted memories (default: all suggestions) into their matching project; resolves what was filed (undefined on error). */
   fileUnsorted(ids?: string[]): Promise<Reassignment[] | undefined>;
   /** Review decisions (always as the user). Resolve true on success. */
@@ -300,6 +313,20 @@ export function createWorkspaceStore(initialRepo: MemoryRepository) {
           return false;
         }
       },
+      createOrganization: (name) => run(() => repo.createOrganization({ name, actor: userActor() })),
+      renameOrganization: (id, name) => succeeded(() => repo.renameOrganization({ id, name, actor: userActor() })),
+      deleteOrganization: async (id) => {
+        try {
+          sync((await repo.deleteOrganization({ id, actor: userActor() })).state);
+          return true;
+        } catch (e) {
+          fail(e);
+          return false;
+        }
+      },
+      confirmOrganization: (id) => succeeded(() => repo.confirmOrganization({ id, actor: userActor() })),
+      assignProjectOrganization: (projectId, organizationId) =>
+        succeeded(() => repo.assignProjectOrganization({ projectId, organizationId, actor: userActor() })),
       fileUnsorted: (ids) => run(() => repo.fileUnsorted({ ids, actor: userActor() })),
       approve: (revisionId) => succeeded(() => repo.approve({ revisionId, actor: userActor() })),
       reject: (revisionId) => succeeded(() => repo.reject({ revisionId, actor: userActor() })),

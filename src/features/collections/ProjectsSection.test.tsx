@@ -1,7 +1,7 @@
 import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import { listMemories, memoryHistory, suggestReassignments } from "../../domain";
 import { useWorkspace } from "../../stores/workspaceStore";
-import { renderAt, resetWorkspace } from "../../test/helpers";
+import { nativeSelect, renderAt, resetWorkspace } from "../../test/helpers";
 import { CollectionsPage } from "./CollectionsPage";
 
 const store = () => useWorkspace.getState();
@@ -126,5 +126,95 @@ describe("Unsorted notice", () => {
     await store().createMemory({ title: "Plain note" });
     renderPage();
     expect(screen.queryByRole("button", { name: "File these" })).not.toBeInTheDocument();
+  });
+});
+
+describe("Organizations", () => {
+  const orgs = () => Object.values(store().state!.organizations);
+  const orgRow = (name: string) =>
+    within(screen.getByRole("list", { name: "Organizations list" }))
+      .getAllByRole("listitem")
+      .find((li) => li.textContent?.includes(name))!;
+  const pick = (container: HTMLElement, project: string, value: string) =>
+    fireEvent.change(nativeSelect(container, `Organization of ${project}`), { target: { value } });
+
+  it("shows an empty state, then creates an organization", async () => {
+    renderPage();
+    expect(screen.getByText("No organizations yet")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "New organization" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Create organization" }));
+    expect(await screen.findByText("Name is required.")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Organization name"), { target: { value: "ROK" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create organization" }));
+    await waitFor(() => expect(orgs().map((o) => o.name)).toEqual(["ROK"]));
+    expect(await waitFor(() => orgRow("ROK"))).toHaveTextContent("Confirmed");
+    expect(orgRow("ROK")).toHaveTextContent("0 projects");
+  });
+
+  it("shows each project's organization and assigns / unassigns it with the Organization select", async () => {
+    const p = await store().createProject({ name: "VT" });
+    await store().createOrganization("ROK");
+    const { container } = renderPage();
+    expect(row("VT")).toHaveTextContent("Organization: none");
+    pick(container, "VT", orgs()[0].id);
+    await waitFor(() => expect(store().state!.projects[p!.id].organizationId).toBe(orgs()[0].id));
+    expect(row("VT")).toHaveTextContent("Organization: ROK");
+    expect(orgRow("ROK")).toHaveTextContent("1 project");
+    pick(container, "VT", "__none__");
+    await waitFor(() => expect(store().state!.projects[p!.id].organizationId).toBeNull());
+    expect(row("VT")).toHaveTextContent("Organization: none");
+  });
+
+  it("'New organization…' creates one and assigns it to the project; a duplicate name shows a clear message", async () => {
+    const p = await store().createProject({ name: "VT" });
+    await store().createOrganization("Existing");
+    const { container } = renderPage();
+    pick(container, "VT", "__new__");
+    fireEvent.change(await screen.findByLabelText("Organization name"), { target: { value: "existing" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create and assign" }));
+    expect(await screen.findByText("An organization with that name already exists. Choose a different name.")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Organization name"), { target: { value: "ROK" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create and assign" }));
+    await waitFor(() => expect(orgs().map((o) => o.name).sort()).toEqual(["Existing", "ROK"]));
+    const rok = orgs().find((o) => o.name === "ROK")!;
+    expect(store().state!.projects[p!.id].organizationId).toBe(rok.id);
+  });
+
+  it("renames (duplicates are refused), and deletes after confirmation: the projects stay, unlinked", async () => {
+    const p = await store().createProject({ name: "VT" });
+    const a = await store().createOrganization("Alpha");
+    await store().createOrganization("Beta");
+    await store().assignProjectOrganization(p!.id, a!.id);
+    renderPage();
+    fireEvent.click(within(orgRow("Beta")).getByRole("button", { name: "Rename organization Beta" }));
+    fireEvent.change(await screen.findByLabelText("Organization name"), { target: { value: "alpha" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    expect(await screen.findByText("An organization with that name already exists. Choose a different name.")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Organization name"), { target: { value: "Gamma" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(orgs().map((o) => o.name).sort()).toEqual(["Alpha", "Gamma"]));
+
+    fireEvent.click(within(orgRow("Alpha")).getByRole("button", { name: "Delete organization Alpha" }));
+    expect(await screen.findByText("Delete organization “Alpha”?")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(orgs()).toHaveLength(2);
+    fireEvent.click(within(orgRow("Alpha")).getByRole("button", { name: "Delete organization Alpha" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Delete organization" }));
+    await waitFor(() => expect(orgs().map((o) => o.name)).toEqual(["Gamma"]));
+    expect(store().state!.projects[p!.id].organizationId).toBeNull();
+    expect(projectNames()).toEqual(["VT"]);
+  });
+
+  it("flags an organization an agent proposed as unconfirmed, with a Confirm button", async () => {
+    await store().createMemory({ title: "VT: kickoff", project: { name: "VT" }, organization: "ROK" }, { actor: agent });
+    renderPage();
+    expect(orgRow("ROK")).toHaveTextContent("Unconfirmed");
+    expect(orgRow("ROK")).toHaveTextContent("created by claude-code");
+    expect(row("VT")).toHaveTextContent("Organization: ROK");
+    expect(within(row("VT")).getByText("Unconfirmed organization")).toBeInTheDocument();
+    fireEvent.click(within(orgRow("ROK")).getByRole("button", { name: "Confirm organization ROK" }));
+    await waitFor(() => expect(orgRow("ROK")).toHaveTextContent("Confirmed"));
+    expect(within(row("VT")).queryByText("Unconfirmed organization")).not.toBeInTheDocument();
+    expect(Object.values(store().state!.projects)[0].confirmed).toBe(false); // the project itself is still unconfirmed
   });
 });

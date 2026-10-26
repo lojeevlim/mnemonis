@@ -5,7 +5,11 @@ import {
   createEmptyWorkspace,
   createMemory,
   addRelation,
+  createOrganization,
+  assignProjectOrganization,
+  createProject,
   createSequentialContext,
+  LIMITS,
   listRelations,
   type WorkspaceState,
 } from "../../domain";
@@ -19,7 +23,10 @@ import {
   searchNodes,
   availableAttributeKinds,
   withAttributeNodes,
+  withOrganizationNodes,
   MAX_ATTRIBUTE_NODES,
+  MAX_ORGANIZATION_NODES,
+  organizationNodeId,
   type Graph,
   type GraphEdge,
   type GraphNode,
@@ -621,5 +628,78 @@ describe("availableAttributeKinds", () => {
   it("follows the filters", () => {
     const g: Graph = { nodes: [node("a", { type: "fact", tags: ["x"], collectionId: "c1" }), node("b", { type: "task", tags: [] })], edges: [] };
     expect(availableAttributeKinds(filterGraph(g, { type: "task" }), collections)).toEqual(["type", "status"]);
+  });
+});
+
+describe("withOrganizationNodes", () => {
+  const user = { kind: "user", name: "u" } as const;
+  const setup = () => {
+    const ctx = createSequentialContext();
+    let s = createEmptyWorkspace();
+    const rok = createOrganization(s, ctx, { name: "ROK", actor: user });
+    s = rok.state;
+    const vt = createProject(s, ctx, { name: "VT", actor: user });
+    s = vt.state;
+    s = assignProjectOrganization(s, { projectId: vt.value.id, organizationId: rok.value.id, actor: user }).state;
+    for (const title of ["a", "b"]) s = createMemory(s, ctx, { title, projectId: vt.value.id, actor: user }).state;
+    return { s, ctx, rok: rok.value, vt: vt.value };
+  };
+
+  it("returns the very same graph when there are no organizations", () => {
+    const g = buildGraph(createSeedWorkspace());
+    expect(withOrganizationNodes(g, createSeedWorkspace())).toBe(g);
+  });
+
+  it("adds an org:<id> hub with its project count and links every project hub to it; nothing else changes", () => {
+    const { s, rok, vt } = setup();
+    const base = buildGraph(s);
+    const g = withOrganizationNodes(base, s);
+    const hub = g.nodes.find((n) => n.id === organizationNodeId(rok.id))!;
+    expect(hub).toMatchObject({ id: `org:${rok.id}`, title: "ROK", organization: true, degree: 1, childCount: 1, project: null, isProject: false });
+    expect(g.nodes.slice(0, base.nodes.length)).toEqual(base.nodes);
+    expect(g.edges.slice(0, base.edges.length)).toEqual(base.edges);
+    const links = g.edges.filter((e) => e.organization);
+    expect(links).toHaveLength(1);
+    expect(links[0]).toMatchObject({ source: `project:${vt.id}`, target: hub.id, organization: true });
+    expect(base.nodes.some((n) => n.organization)).toBe(false);
+  });
+
+  it("an organization without projects (or whose projects have no node) is still drawn, unlinked", () => {
+    const ctx = createSequentialContext();
+    const s = createOrganization(createEmptyWorkspace(), ctx, { name: "Empty", actor: user });
+    const g = withOrganizationNodes(buildGraph(s.state), s.state);
+    expect(g.nodes).toHaveLength(1);
+    expect(g.nodes[0]).toMatchObject({ organization: true, degree: 0 });
+    expect(g.edges).toHaveLength(0);
+  });
+
+  it("is not a memory: ids cannot collide with memory ids, and a taken id is skipped", () => {
+    const { s, rok } = setup();
+    const ctx = createSequentialContext("2030-01-01T00:00:00.000Z");
+    const clash = createMemory(s, ctx, { id: `org:${rok.id}`, title: "weird id", actor: user }).state;
+    const g = withOrganizationNodes(buildGraph(clash), clash);
+    expect(g.nodes.filter((n) => n.id === `org:${rok.id}`)).toHaveLength(1);
+    expect(g.nodes.find((n) => n.id === `org:${rok.id}`)!.organization).toBeUndefined();
+  });
+
+  it("is capped, deterministic (oldest first) and excluded from attribute groups", () => {
+    const ctx = createSequentialContext();
+    let s = createEmptyWorkspace();
+    const names: string[] = [];
+    for (let i = 0; i < MAX_ORGANIZATION_NODES + 5; i++) {
+      names.push(`Org ${i}`);
+      s = createOrganization(s, ctx, { name: `Org ${i}`, actor: user }).state; // the domain caps at 50, so craft the rest directly
+      if (i + 1 >= LIMITS.maxOrganizations) break;
+    }
+    const extra = { ...s, organizations: { ...s.organizations } };
+    for (let i = 0; i < 5; i++) extra.organizations[`org_x${i}`] = { id: `org_x${i}`, key: `x${i}`, name: `X${i}`, createdAt: "2099-01-01T00:00:00.000Z", createdBy: "u", autoCreated: false, confirmed: true };
+    const g = withOrganizationNodes(buildGraph(extra), extra);
+    expect(g.nodes.filter((n) => n.organization)).toHaveLength(MAX_ORGANIZATION_NODES);
+    expect(g.nodes.some((n) => n.id === "org:org_x0")).toBe(false); // the newest are dropped
+    const again = withOrganizationNodes(buildGraph(extra), extra);
+    expect(again).toEqual(g);
+    // attribute nodes only ever group memories
+    const withAttrs = withAttributeNodes(withOrganizationNodes(buildGraph(extra), extra), ["type"], {});
+    expect(withAttrs.nodes.filter((n) => n.attr)).toHaveLength(0);
   });
 });

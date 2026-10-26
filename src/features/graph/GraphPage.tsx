@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { Button, Checkbox, Drawer, EmptyState, Input, Modal, SearchInput, Select } from "lojee-ui";
-import { listMemories, type MemoryStatus } from "../../domain";
+import { listMemories, type MemoryStatus, type WorkspaceState } from "../../domain";
 import { normalizeTitle, TITLE_PREFIX_LABEL, TITLE_PREFIX_PROCESS } from "../../domain/titlePrefix";
 import { useAction } from "../../components/hooks";
 import { PageHeader } from "../../components/PageHeader";
@@ -11,7 +11,7 @@ import { InlineError } from "../../components/InlineError";
 import { useInlineAction } from "../../components/useInlineAction";
 import { MemoryDetail } from "../memories/MemoryDetail";
 import { GraphCanvas, type FocusRequest } from "./GraphCanvas";
-import { GraphSidePanel } from "./GraphSidePanel";
+import { GraphSidePanel, type OrganizationSelection } from "./GraphSidePanel";
 import { assignProjectAccents } from "./graphStyle";
 import {
   buildGraph,
@@ -19,9 +19,11 @@ import {
   filterGraph,
   isolatedNodes,
   isVirtualNodeId,
+  ORGANIZATION_NODE_PREFIX,
   searchNodes,
   availableAttributeKinds,
   withAttributeNodes,
+  withOrganizationNodes,
   type AttributeKind,
   type Graph,
   type GraphFilters,
@@ -55,6 +57,21 @@ function attributeSelection(graph: Graph, node: GraphNode): { node: GraphNode; m
   return { node, members };
 }
 
+/** An organization hub lists its projects (with their memory counts) and the memories of those projects. */
+function organizationSelection(state: WorkspaceState, graph: Graph, node: GraphNode): OrganizationSelection {
+  const organizationId = node.id.slice(ORGANIZATION_NODE_PREFIX.length);
+  const projects = Object.values(state.projects)
+    .filter((p) => p.organizationId === organizationId)
+    .sort((a, b) => a.name.localeCompare(b.name) || (a.id < b.id ? -1 : 1));
+  const ids = new Set(projects.map((p) => p.id));
+  const memories = graph.nodes
+    .filter((n) => !n.virtual && !n.attr && !n.organization && n.project !== null && ids.has(n.project))
+    .sort((a, b) => a.title.localeCompare(b.title) || (a.id < b.id ? -1 : 1));
+  const count = new Map<string, number>();
+  for (const m of memories) count.set(m.project!, (count.get(m.project!) ?? 0) + 1);
+  return { node, projects: projects.map((p) => ({ id: p.id, name: p.name, count: count.get(p.id) ?? 0 })), memories };
+}
+
 export function GraphPage() {
   const state = useWorkspace((s) => s.state);
   const addRelation = useWorkspace((s) => s.addRelation);
@@ -76,6 +93,7 @@ export function GraphPage() {
   const [linkTarget, setLinkTarget] = useState<string | null>(null);
   const [linkNotice, setLinkNotice] = useState<string | null>(null);
   const [attributeId, setAttributeId] = useState<string | null>(null);
+  const [organizationId, setOrganizationId] = useState<string | null>(null);
   const [creatingHub, setCreatingHub] = useState(false);
   const [hubNotice, setHubNotice] = useState<string | null>(null);
   const creatingHubRef = useRef(false);
@@ -112,8 +130,9 @@ export function GraphPage() {
     () => new Set<AttributeKind>(graph && state ? availableAttributeKinds(graph, state.collections) : []),
     [graph, state],
   );
+  // Organization hubs are added last and only for drawing: counts, clusters, isolated memories and search use `graph`.
   const shown = useMemo(
-    () => (graph && state ? withAttributeNodes(graph, attributeKinds, state.collections) : null),
+    () => (graph && state ? withOrganizationNodes(withAttributeNodes(graph, attributeKinds, state.collections), state) : null),
     [graph, state, attributeKinds],
   );
   // Colours come from every project, archived memories included, so neither filters nor the archived toggle recolour anything.
@@ -158,9 +177,18 @@ export function GraphPage() {
   const attributeNode = attributeId ? shown.nodes.find((n) => n.id === attributeId && n.attr) : undefined;
   const selectedAttribute = attributeNode ? attributeSelection(shown, attributeNode) : null;
 
+  const organizationNode = organizationId ? shown.nodes.find((n) => n.id === organizationId && n.organization) : undefined;
+  const selectedOrganization = organizationNode ? organizationSelection(state, shown, organizationNode) : null;
+
   let emphasis: Set<string> | null = null;
   if (query.trim()) emphasis = new Set(matches);
-  else if (selectedAttribute) emphasis = new Set([selectedAttribute.node.id, ...selectedAttribute.members.map((m) => m.id)]);
+  else if (selectedOrganization) {
+    const projectIds = new Set(selectedOrganization.projects.map((p) => p.id));
+    emphasis = new Set([
+      selectedOrganization.node.id,
+      ...shown.nodes.filter((n) => n.project !== null && projectIds.has(n.project)).map((n) => n.id),
+    ]);
+  } else if (selectedAttribute) emphasis = new Set([selectedAttribute.node.id, ...selectedAttribute.members.map((m) => m.id)]);
   else if (activeCluster) emphasis = new Set(activeCluster);
   else if (highlightIsolated) emphasis = new Set(isolated.map((n) => n.id));
   const highlightIds = highlightIsolated ? new Set(isolated.map((n) => n.id)) : null;
@@ -191,6 +219,19 @@ export function GraphPage() {
   };
 
   const selectNode = (id: string) => {
+    const org = shown.nodes.find((n) => n.id === id && n.organization);
+    if (org) {
+      if (linkMode) {
+        setLinkNotice(`"${org.title}" is an organization, not a memory, so it cannot be linked.`);
+        return;
+      }
+      setSelectedEdgeId(null);
+      setHubNotice(null);
+      setAttributeId(null);
+      setOrganizationId(id);
+      setParam("memory", null);
+      return;
+    }
     const attr = shown.nodes.find((n) => n.id === id && n.attr);
     if (attr) {
       if (linkMode) {
@@ -199,11 +240,13 @@ export function GraphPage() {
       }
       setSelectedEdgeId(null);
       setHubNotice(null);
+      setOrganizationId(null);
       setAttributeId(id);
       setParam("memory", null);
       return;
     }
     setAttributeId(null);
+    setOrganizationId(null);
     if (linkMode) {
       if (isVirtualNodeId(id)) {
         const hub = base.nodes.find((n) => n.id === id);
@@ -223,12 +266,14 @@ export function GraphPage() {
   const selectEdge = (id: string) => {
     if (linkMode) return;
     setAttributeId(null);
+    setOrganizationId(null);
     setParam("memory", null);
     setSelectedEdgeId(id);
   };
   const clearSelection = () => {
     setSelectedEdgeId(null);
     setAttributeId(null);
+    setOrganizationId(null);
     if (!linkMode) setParam("memory", null);
   };
 
@@ -426,7 +471,7 @@ export function GraphPage() {
                   nodes={shown.nodes}
                   edges={shown.edges}
                   projectAccents={projectAccents}
-                  selectedNodeId={attributeNode ? attributeNode.id : openId}
+                  selectedNodeId={organizationNode ? organizationNode.id : attributeNode ? attributeNode.id : openId}
                   selectedEdgeId={edge?.id ?? null}
                   emphasisIds={emphasis}
                   highlightIds={highlightIds}
@@ -447,6 +492,8 @@ export function GraphPage() {
               isolated={isolated}
               selectedHub={selectedHub}
               attributeKinds={attributeKinds}
+              organizationCount={shown.nodes.filter((n) => n.organization).length}
+              selectedOrganization={selectedOrganization}
               selectedAttribute={selectedAttribute}
               creatingHub={creatingHub}
               hubNotice={hubNotice}

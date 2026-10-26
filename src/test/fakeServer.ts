@@ -1,11 +1,16 @@
 import {
   applyReassignments,
+  assignProjectOrganization,
+  confirmOrganization,
   confirmProject,
+  createOrganization,
   createEmptyWorkspace,
   createProject,
   createSequentialContext,
+  deleteOrganization,
   deleteProject,
   DomainError,
+  renameOrganization,
   renameProject,
   SCHEMA_VERSION,
   type Actor,
@@ -24,6 +29,8 @@ type Reply = { status: number; json?: unknown; text?: string } | "network-error"
 
 const STATUS: Record<string, number> = {
   project_not_found: 404,
+  organization_not_found: 404,
+  duplicate_organization: 409,
   duplicate_project: 409,
   project_in_use: 409,
   invalid_input: 400,
@@ -87,6 +94,12 @@ export function createFakeServer(initial: { rev?: number; state?: WorkspaceState
         confirmProject: () => confirmProject(s.state, { id: args.id, actor: user }, ctx),
         renameProject: () => renameProject(s.state, { id: args.id, name: args.name, actor: user }, ctx),
         deleteProject: () => deleteProject(s.state, { id: args.id, actor: user }),
+        createOrganization: () => createOrganization(s.state, ctx, { name: args.name, actor: user }),
+        renameOrganization: () => renameOrganization(s.state, { id: args.id, name: args.name, actor: user }),
+        deleteOrganization: () => deleteOrganization(s.state, { id: args.id, actor: user }),
+        confirmOrganization: () => confirmOrganization(s.state, { id: args.id, actor: user }),
+        assignProjectOrganization: () =>
+          assignProjectOrganization(s.state, { projectId: args.projectId, organizationId: (body as { organizationId: string | null }).organizationId, actor: user }),
         fileUnsorted: () => applyReassignments(s.state, ctx, { ids: args.ids, actor: user }),
       };
       if (projectOps[name]) {

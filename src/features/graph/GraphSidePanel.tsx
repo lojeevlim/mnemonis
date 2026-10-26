@@ -48,6 +48,14 @@ function legendProjects(nodes: GraphNode[]): { key: string; name: string; count:
     .sort((a, b) => a.name.localeCompare(b.name) || (a.key < b.key ? -1 : 1));
 }
 
+export interface OrganizationSelection {
+  node: GraphNode;
+  /** Projects of the organization (from the workspace) with their number of shown memories. */
+  projects: { id: string; name: string; count: number }[];
+  /** Memories of those projects that are shown. */
+  memories: GraphNode[];
+}
+
 const KIND_LEGEND: Record<AttributeKind, string> = {
   collection: "collections",
   type: "types",
@@ -74,6 +82,10 @@ interface Props {
   attributeKinds?: ReadonlySet<AttributeKind>;
   /** Selected attribute node and its members: memories of a value node, value nodes of a category hub. */
   selectedAttribute?: { node: GraphNode; members: GraphNode[] } | null;
+  /** Number of organization hubs drawn (the legend entry only shows when there are some). */
+  organizationCount?: number;
+  /** Selected organization hub: its projects and their memories. */
+  selectedOrganization?: OrganizationSelection | null;
   onFocusCluster: (index: number) => void;
   onOpenMemory: (id: string) => void;
   onRemoveEdge: (id: string) => void;
@@ -92,6 +104,8 @@ export function GraphSidePanel({
   onCreateHub,
   attributeKinds,
   selectedAttribute = null,
+  organizationCount = 0,
+  selectedOrganization = null,
   onFocusCluster,
   onOpenMemory,
   onRemoveEdge,
@@ -132,6 +146,43 @@ export function GraphSidePanel({
               <p role="status" className="text-xs text-fg-muted">
                 {hubNotice}
               </p>
+            )}
+          </div>
+        </Section>
+      )}
+
+      {selectedOrganization && (
+        <Section title="Selected organization">
+          <div className="space-y-2 rounded-lg border border-border bg-surface-muted p-2" data-testid="selected-organization">
+            <p className="text-fg">
+              <span className="font-medium">{selectedOrganization.node.title}</span> · {selectedOrganization.projects.length}{" "}
+              {selectedOrganization.projects.length === 1 ? "project" : "projects"} · {selectedOrganization.memories.length}{" "}
+              {selectedOrganization.memories.length === 1 ? "memory" : "memories"}
+            </p>
+            <ul className="space-y-1" aria-label="Organization projects">
+              {selectedOrganization.projects.map((p) => (
+                <li key={p.id} className="flex items-center gap-2 px-2 py-1 text-xs text-fg">
+                  <ProjectDot project={p.id} accents={projectAccents} />
+                  <span className="min-w-0 truncate">{p.name}</span>
+                  <span className="ml-auto shrink-0 text-fg-muted">{p.count}</span>
+                </li>
+              ))}
+            </ul>
+            {selectedOrganization.memories.length > 0 && (
+              <ul className="space-y-1" aria-label="Organization memories">
+                {selectedOrganization.memories.map((m) => (
+                  <li key={m.id}>
+                    <button
+                      type="button"
+                      onClick={() => onOpenMemory(m.id)}
+                      className="flex w-full items-center gap-2 rounded-md px-2 py-1 text-left text-xs text-fg hover:bg-surface-raised focus-visible:outline-2"
+                    >
+                      <ProjectDot project={m.project} accents={projectAccents} />
+                      <span className="min-w-0 truncate">{m.title}</span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
             )}
           </div>
         </Section>
@@ -298,6 +349,15 @@ export function GraphSidePanel({
               Big circle: {KIND_LEGEND[k]}, one small dot per value (dotted line to its memories)
             </li>
           ))}
+          {organizationCount > 0 && (
+            <li className="flex items-center gap-2" data-legend-organization="">
+              <svg width="20" height="20" viewBox="-10 -10 20 20" aria-hidden="true">
+                <circle r="9" fill={NEUTRAL} fillOpacity="0.18" stroke="var(--color-fg-muted)" strokeWidth="2" />
+                <circle r="6" fill="none" stroke="var(--color-fg-muted)" strokeWidth="1" />
+              </svg>
+              Largest circle: an organization, linked (solid line) to the projects it contains.
+            </li>
+          )}
           <li>Node size grows with the number of relations.</li>
           <li>Big circle: a project, with its &ldquo;&lt;project&gt;: ...&rdquo; memories around it (dashed line: derived from the title).</li>
           <li className="flex items-center gap-2">

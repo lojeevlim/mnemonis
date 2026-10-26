@@ -18,6 +18,13 @@ describe("nodeRadius", () => {
     expect(nodeRadius({ degree: 500, childCount: 500, isProject: true })).toBe(40);
   });
 
+  it("makes an organization hub bigger than any project hub, growing with its project count up to a cap", () => {
+    const biggestProject = nodeRadius({ degree: 500, childCount: 500, isProject: true });
+    expect(nodeRadius({ degree: 0, childCount: 0, organization: true })).toBeGreaterThan(biggestProject);
+    expect(nodeRadius({ degree: 4, childCount: 4, organization: true })).toBeGreaterThan(nodeRadius({ degree: 1, childCount: 1, organization: true }));
+    expect(nodeRadius({ degree: 50, childCount: 50, organization: true })).toBe(64);
+  });
+
   it("sizes a hub with six children like a project hub", () => {
     expect(nodeRadius({ degree: 6, childCount: 6, isProject: true })).toBe(Math.min(40, 14 + Math.sqrt(6) * 4));
   });

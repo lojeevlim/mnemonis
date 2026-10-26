@@ -10,11 +10,14 @@ import {
 import v1Seed from "../domain/__fixtures__/v1-seed.json";
 import v1Drafts from "../domain/__fixtures__/v1-drafts.json";
 import v2Prefixes from "../domain/__fixtures__/v2-prefixes.json";
+import v3Projects from "../domain/__fixtures__/v3-projects.json";
 import {
   CORRUPT_BACKUP_KEY,
   LEGACY_CORRUPT_BACKUP_KEY,
   LEGACY_STORAGE_KEY,
   LEGACY_V2_CORRUPT_BACKUP_KEY,
+  LEGACY_V3_CORRUPT_BACKUP_KEY,
+  LEGACY_V3_STORAGE_KEY,
   LEGACY_V2_STORAGE_KEY,
   LocalRepository,
   STORAGE_KEY,
@@ -357,6 +360,43 @@ describe("storage recovery", () => {
     expect(ok.value.status).toBe("saved");
     const rej = await repo.addRelation({ fromId: "b", toId: "a", label: "m", provenance: { origin: "process", createdBy: "bot" }, actor: AGENT });
     expect((await repo.rejectRelation({ relationId: rej.value.id, actor: U })).value.status).toBe("rejected");
+  });
+});
+
+describe("legacy v3 storage (no organizations)", () => {
+  const v3Envelope = (state: unknown) => JSON.stringify({ schemaVersion: 3, state });
+
+  it("reads the v3 key on load, persists under v4 (organizations added, every id intact) and leaves the v3 key untouched", async () => {
+    const storage = new MemoryStorage();
+    const raw = v3Envelope(v3Projects);
+    storage.setItem(LEGACY_V3_STORAGE_KEY, raw);
+    const repo = make(storage);
+    const s = await repo.load();
+    expect(repo.getStatus().loadIssue).toBeNull();
+    expect(s.schemaVersion).toBe(4);
+    expect(s.organizations).toEqual({});
+    expect(Object.keys(s.projects)).toEqual(Object.keys(v3Projects.projects));
+    for (const p of Object.values(s.projects)) expect(p.organizationId).toBeNull();
+    expect(Object.keys(s.memories)).toEqual(Object.keys(v3Projects.memories));
+    expect(JSON.parse(storage.getItem(STORAGE_KEY) as string)).toMatchObject({ schemaVersion: 4, state: { schemaVersion: 4 } });
+    expect(storage.getItem(LEGACY_V3_STORAGE_KEY)).toBe(raw);
+    storage.setItem(LEGACY_V3_STORAGE_KEY, "changed after migration");
+    expect(Object.keys((await make(storage).load()).projects)).toEqual(Object.keys(v3Projects.projects));
+  });
+
+  it("an old v3 export file still imports; unreadable v3 data is backed up in its own slot and the older keys are tried", async () => {
+    const repo = make(new MemoryStorage());
+    await repo.load();
+    const s = await repo.importJson(v3Envelope(v3Projects));
+    expect(s.schemaVersion).toBe(4);
+    expect(Object.keys(s.projects)).toEqual(Object.keys(v3Projects.projects));
+    const storage = new MemoryStorage();
+    storage.setItem(LEGACY_V3_STORAGE_KEY, "{broken");
+    storage.setItem(LEGACY_V2_STORAGE_KEY, JSON.stringify({ schemaVersion: 2, state: v2Prefixes }));
+    const again = make(storage);
+    expect(Object.keys((await again.load()).projects)).toHaveLength(2);
+    expect(storage.getItem(LEGACY_V3_CORRUPT_BACKUP_KEY)).toBe("{broken");
+    expect(storage.getItem(LEGACY_V3_STORAGE_KEY)).toBe("{broken");
   });
 });
 

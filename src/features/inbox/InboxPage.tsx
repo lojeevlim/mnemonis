@@ -105,6 +105,11 @@ function InboxSection() {
                 : undefined;
             const isNew = !!project && project.autoCreated && !project.confirmed;
             const repo = project?.sources.find((s) => s.kind === "repo")?.ref;
+            // The organization an agent proposed for a new project (shown while the project is new; the user approves it with the memory).
+            const organization =
+              isNew && project.organizationId && Object.hasOwn(state.organizations, project.organizationId)
+                ? state.organizations[project.organizationId]
+                : undefined;
             return (
               <li key={p.revisionId} className="space-y-2 rounded-lg border border-border p-3">
                 <div className="flex flex-wrap items-center gap-2">
@@ -151,6 +156,7 @@ function InboxSection() {
                           </Badge>
                         )}
                         {repo && <span className="font-normal text-fg-muted">{`Repository: ${repo}`}</span>}
+                        {organization && <span>{`Organization: ${organization.name}${organization.confirmed ? "" : " (new)"}`}</span>}
                       </span>
                     )}
                     {target && <span>{`Collection: ${collectionLabel(state.collections, target.after)}`}</span>}

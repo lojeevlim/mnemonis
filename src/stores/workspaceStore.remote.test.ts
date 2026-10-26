@@ -144,3 +144,32 @@ describe("workspace store project actions over the server", () => {
     expect(fake.calls.at(-1)).toMatchObject({ path: "/api/ops/fileUnsorted", body: { ids: ["m1"] } });
   });
 });
+
+describe("workspace store organization actions over the server", () => {
+  it("creates, assigns, renames, confirms and deletes an organization and adopts the returned state", async () => {
+    const { store, fake } = await setup();
+    const p = await store.getState().createProject({ name: "VT" });
+    const o = await store.getState().createOrganization("ROK");
+    expect(o).toMatchObject({ name: "ROK", confirmed: true });
+    expect(fake.calls.at(-1)).toMatchObject({ path: "/api/ops/createOrganization", body: { name: "ROK" } });
+    expect(await store.getState().assignProjectOrganization(p!.id, o!.id)).toBe(true);
+    expect(store.getState().state!.projects[p!.id].organizationId).toBe(o!.id);
+    expect(await store.getState().renameOrganization(o!.id, "ROK Inc")).toBe(true);
+    expect(store.getState().state!.organizations[o!.id].name).toBe("ROK Inc");
+    expect(await store.getState().confirmOrganization(o!.id)).toBe(true);
+    expect(await store.getState().assignProjectOrganization(p!.id, null)).toBe(true);
+    expect(await store.getState().deleteOrganization(o!.id)).toBe(true);
+    expect(store.getState().state!.organizations).toEqual({});
+    expect(store.getState().state!.projects[p!.id]).toBeDefined();
+  });
+
+  it("turns the organization error codes into clear messages", async () => {
+    const { store } = await setup();
+    expect(await store.getState().renameOrganization("org_gone", "x")).toBe(false);
+    expect(store.getState().error).toBe("That organization no longer exists. It may have been deleted elsewhere.");
+    await store.getState().createOrganization("ROK");
+    expect(store.getState().error).toBeNull();
+    expect(await store.getState().createOrganization("rok")).toBeUndefined();
+    expect(store.getState().error).toBe("An organization with that name already exists. Choose a different name.");
+  });
+});

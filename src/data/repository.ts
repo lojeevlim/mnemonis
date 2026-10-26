@@ -5,6 +5,7 @@ import type {
   Memory,
   MemoryPatch,
   Mutation,
+  Organization,
   Project,
   Reassignment,
   Revision,
@@ -80,6 +81,15 @@ export interface MemoryRepository {
   confirmProject(args: { id: string; actor: Actor }): Promise<Mutation<Project>>;
   renameProject(args: { id: string; name: string; actor: Actor }): Promise<Mutation<Project>>;
   deleteProject(args: { id: string; actor: Actor }): Promise<Mutation>;
+  /**
+   * Organizations are user-only too (an agent actor is refused with "forbidden"). Errors: organization_not_found,
+   * project_not_found, duplicate_organization, too_large, invalid_input. Deleting an organization keeps its projects.
+   */
+  createOrganization(args: { name: string; actor: Actor }): Promise<Mutation<Organization>>;
+  renameOrganization(args: { id: string; name: string; actor: Actor }): Promise<Mutation<Organization>>;
+  deleteOrganization(args: { id: string; actor: Actor }): Promise<Mutation>;
+  confirmOrganization(args: { id: string; actor: Actor }): Promise<Mutation<Organization>>;
+  assignProjectOrganization(args: { projectId: string; organizationId: string | null; actor: Actor }): Promise<Mutation<Project>>;
   /** Files Unsorted memories (the given ids, default every suggestion) into their uniquely matching project. Value = what was filed. */
   fileUnsorted(args: { ids?: string[]; actor: Actor }): Promise<Mutation<Reassignment[]>>;
 

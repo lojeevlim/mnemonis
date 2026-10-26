@@ -73,11 +73,15 @@ const projectRadius = (childCount: number): number => Math.min(40, 14 + Math.sqr
 /** Category hubs are 35% bigger than a project hub with the same member count (cap 54 vs 40), so they always read as the biggest circles. */
 export const ATTRIBUTE_HUB_SCALE = 1.35;
 
+/** Organization hubs are the biggest circles: bigger than any project hub (cap 40), growing a little with their project count. */
+const organizationRadius = (projectCount: number): number => Math.min(64, 44 + Math.sqrt(projectCount) * 5);
+
 /** Radius of an attribute value node: clearly below the smallest memory node (7). */
 export const VALUE_NODE_RADIUS = 4.5;
 
 /** Node radius grows with degree (capped); project hubs are bigger and grow with their child count (capped); category hubs are bigger still; value nodes are smaller than any memory. */
-export function nodeRadius(node: Pick<GraphNode, "degree"> & Partial<Pick<GraphNode, "childCount" | "isProject" | "attr" | "attrRole">>): number {
+export function nodeRadius(node: Pick<GraphNode, "degree"> & Partial<Pick<GraphNode, "childCount" | "isProject" | "attr" | "attrRole" | "organization">>): number {
+  if (node.organization) return organizationRadius(node.childCount ?? 0);
   if (node.attr && node.attrRole === "value") return VALUE_NODE_RADIUS;
   if (node.attr) return Math.min(54, ATTRIBUTE_HUB_SCALE * (14 + Math.sqrt(node.childCount ?? 0) * 4));
   if (node.isProject) return projectRadius(node.childCount ?? 0);

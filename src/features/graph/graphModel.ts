@@ -1,4 +1,4 @@
-import { LIMITS, listMemories, listRelations, projectOfMemory, type MemoryStatus, type Project, type WorkspaceState } from "../../domain";
+import { LIMITS, listMemories, listOrganizations, listRelations, projectOfMemory, type MemoryStatus, type Project, type WorkspaceState } from "../../domain";
 import { STATUS_META, typeLabel } from "../../components/memoryMeta";
 import { TITLE_PREFIX_LABEL, TITLE_PREFIX_PROCESS, normalizeTitle, parseTitlePrefix } from "../../domain/titlePrefix";
 
@@ -32,6 +32,8 @@ export interface GraphNode {
   attr?: AttributeKind;
   /** Role of an attribute node: the big category hub, or a small value node around it. */
   attrRole?: "category" | "value";
+  /** Organization hub (see `withOrganizationNodes`): a big circle above the project hubs. Not a memory; `degree` / `childCount` = its project count. */
+  organization?: boolean;
 }
 
 export type AttributeKind = "collection" | "type" | "tag" | "status";
@@ -58,6 +60,8 @@ export interface GraphEdge {
   attribute?: boolean;
   /** With `attribute`: this is a value node -> category hub link (the rest are memory -> value links). */
   category?: boolean;
+  /** Project hub -> organization hub link (see `withOrganizationNodes`): decoration only, never a relation. */
+  organization?: boolean;
 }
 
 export interface Graph {
@@ -145,7 +149,7 @@ function groupAttributes(graph: Graph, kind: AttributeKind, collections: Record<
     else groups.set(id, { kind, key, label, members: [m.id] });
   };
   for (const m of graph.nodes) {
-    if (m.virtual || m.attr) continue;
+    if (m.virtual || m.attr || m.organization) continue;
     if (kind === "collection") {
       if (m.collectionId !== null) add(m, m.collectionId, Object.hasOwn(collections, m.collectionId) ? collections[m.collectionId].name : "Unknown collection");
     } else if (kind === "type") {
@@ -219,6 +223,69 @@ export function withAttributeNodes(graph: Graph, kinds: Iterable<AttributeKind>,
       edges.push({ id: `cat:${id}`, source: id, target: hubId, label: kind, origin: "process", demo: false, attribute: true, category: true });
       for (const memberId of g.members) {
         edges.push({ id: `attr:${id}:${memberId}`, source: memberId, target: id, label: kind, origin: "process", demo: false, attribute: true });
+      }
+    }
+  }
+  if (nodes.length === 0) return graph;
+  return { nodes: [...graph.nodes, ...nodes], edges: [...graph.edges, ...edges] };
+}
+
+/** Id prefix of organization hubs; no memory id, project hub id (`project:`), category or value node id starts with it. */
+export const ORGANIZATION_NODE_PREFIX = "org:";
+export const organizationNodeId = (organizationId: string): string => `${ORGANIZATION_NODE_PREFIX}${organizationId}`;
+/** At most this many organization hubs are drawn (the workspace itself caps organizations at LIMITS.maxOrganizations). */
+export const MAX_ORGANIZATION_NODES = LIMITS.maxOrganizations;
+
+/**
+ * Adds one big organization hub (`org:<organizationId>`, labelled with the organization's name; `degree` = its number of
+ * projects) per organization of `state` (the oldest MAX_ORGANIZATION_NODES), always, plus a link from every project hub
+ * of `graph` (a virtual hub, or the memory titled like the project) to the hub of the project's organization.
+ * Organization hubs are not memories: they never get a project colour, and callers keep counting, clustering and searching
+ * on the graph WITHOUT them. Existing nodes and edges are untouched (an id already taken is skipped) and a workspace
+ * without organizations returns the very same graph. Pass the graph that is drawn (after the attribute nodes).
+ */
+export function withOrganizationNodes(graph: Graph, state: WorkspaceState): Graph {
+  const organizations = listOrganizations(state).slice(0, MAX_ORGANIZATION_NODES);
+  if (organizations.length === 0) return graph;
+  const taken = new Set(graph.nodes.map((n) => n.id));
+  const projectsOf = new Map<string, string[]>();
+  for (const p of Object.values(state.projects)) {
+    if (p.organizationId === null || p.organizationId === undefined) continue;
+    const list = projectsOf.get(p.organizationId);
+    if (list) list.push(p.id);
+    else projectsOf.set(p.organizationId, [p.id]);
+  }
+  // project id -> its hub nodes in this graph (a real parent memory and / or the virtual hub)
+  const hubsOf = new Map<string, string[]>();
+  for (const n of graph.nodes) {
+    if (!n.isProject || n.project === null || n.attr || n.organization) continue;
+    const list = hubsOf.get(n.project);
+    if (list) list.push(n.id);
+    else hubsOf.set(n.project, [n.id]);
+  }
+  const nodes: GraphNode[] = [];
+  const edges: GraphEdge[] = [];
+  for (const o of organizations) {
+    const id = organizationNodeId(o.id);
+    if (taken.has(id)) continue;
+    const members = projectsOf.get(o.id) ?? [];
+    nodes.push({
+      id,
+      title: o.name,
+      type: "organization",
+      status: "saved",
+      archived: false,
+      collectionId: null,
+      tags: [],
+      degree: members.length,
+      childCount: members.length,
+      isProject: false,
+      project: null,
+      organization: true,
+    });
+    for (const projectId of members) {
+      for (const hub of hubsOf.get(projectId) ?? []) {
+        edges.push({ id: `org:${o.id}:${hub}`, source: hub, target: id, label: "organization", origin: "process", demo: false, organization: true });
       }
     }
   }

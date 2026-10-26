@@ -50,8 +50,23 @@ const USER_ONLY = new Set([
   "confirmProject",
   "renameProject",
   "deleteProject",
+  "createOrganization",
+  "renameOrganization",
+  "deleteOrganization",
+  "confirmOrganization",
+  "assignProjectOrganization",
   "fileUnsorted",
 ]);
+
+/** A server that predates organizations (schema 3) sends no `organizations` / `organizationId`: read it as "none". */
+function withOrganizations(state: WorkspaceState): WorkspaceState {
+  if (state.organizations !== undefined) return state;
+  return {
+    ...state,
+    organizations: {},
+    projects: Object.fromEntries(Object.entries(state.projects ?? {}).map(([id, p]) => [id, { ...p, organizationId: null }])),
+  };
+}
 
 const etag = (rev: number) => `"${rev}"`;
 
@@ -165,6 +180,12 @@ export class RemoteRepository implements MemoryRepository {
   confirmProject: MemoryRepository["confirmProject"] = ({ actor, ...args }) => this.op("confirmProject", args, actor);
   renameProject: MemoryRepository["renameProject"] = ({ actor, ...args }) => this.op("renameProject", args, actor);
   deleteProject: MemoryRepository["deleteProject"] = ({ actor, ...args }) => this.op("deleteProject", args, actor);
+  createOrganization: MemoryRepository["createOrganization"] = ({ actor, ...args }) => this.op("createOrganization", args, actor);
+  renameOrganization: MemoryRepository["renameOrganization"] = ({ actor, ...args }) => this.op("renameOrganization", args, actor);
+  deleteOrganization: MemoryRepository["deleteOrganization"] = ({ actor, ...args }) => this.op("deleteOrganization", args, actor);
+  confirmOrganization: MemoryRepository["confirmOrganization"] = ({ actor, ...args }) => this.op("confirmOrganization", args, actor);
+  assignProjectOrganization: MemoryRepository["assignProjectOrganization"] = ({ actor, ...args }) =>
+    this.op("assignProjectOrganization", args, actor);
   fileUnsorted: MemoryRepository["fileUnsorted"] = ({ actor, ...args }) => this.op("fileUnsorted", args, actor);
   approve: MemoryRepository["approve"] = ({ actor, ...args }) => this.op("approve", args, actor);
   reject: MemoryRepository["reject"] = ({ actor, ...args }) => this.op("reject", args, actor);
@@ -190,7 +211,7 @@ export class RemoteRepository implements MemoryRepository {
       });
       const json = (await this.readJson(r)) as { rev: number; state: WorkspaceState; value: T | null };
       this.take(json.rev, json.state);
-      return { state: json.state, value: (json.value ?? undefined) as T };
+      return { state: this.state as WorkspaceState, value: (json.value ?? undefined) as T };
     });
   }
 
@@ -210,13 +231,13 @@ export class RemoteRepository implements MemoryRepository {
       throw new RemoteError("http", "The server sent an unexpected response.");
     }
     this.rev = rev;
-    this.state = state;
+    this.state = withOrganizations(state);
   }
 
   private async adopt(r: Response): Promise<WorkspaceState> {
     const json = (await this.readJson(r)) as { rev: number; state: WorkspaceState };
     this.take(json.rev, json.state);
-    return json.state;
+    return this.state as WorkspaceState;
   }
 
   private async readJson(r: Response): Promise<unknown> {

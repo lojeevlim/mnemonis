@@ -25,6 +25,8 @@ const DEFAULT_SIZE = { w: 800, h: 560 };
 const DRAG_THRESHOLD = 3;
 /** Memory -> value springs are weak so the far-away attribute nodes do not drag memories out of their project clusters. */
 const MEMORY_VALUE_SPRING = 0.2;
+/** Project hub -> organization hub: a solid spring that keeps each organization's projects (and their memories) clustered around it. */
+const ORGANIZATION_GAP = 110;
 const FIT_PADDING = 56;
 const FIT_EASE = "transform 280ms ease-out";
 
@@ -82,7 +84,9 @@ function computeLayout(prev: SimNode[], nodes: GraphNode[], edges: GraphEdge[], 
     .map((e) =>
       e.prefix
         ? [e.source, e.target, radiusOf(e.source) + radiusOf(e.target) + 45]
-        : e.category
+        : e.organization
+          ? [e.source, e.target, radiusOf(e.source) + radiusOf(e.target) + ORGANIZATION_GAP]
+          : e.category
           ? [e.source, e.target, radiusOf(e.source) + radiusOf(e.target) + 22]
           : e.attribute
             ? [e.source, e.target, undefined, MEMORY_VALUE_SPRING]
@@ -358,6 +362,25 @@ export function GraphCanvas({
               const y1 = a.y + uy * nodeRadius(na);
               const x2 = b.x - ux * (nodeRadius(nb) + 2);
               const y2 = b.y - uy * (nodeRadius(nb) + 2);
+              if (e.organization) {
+                const dimOrg = emphasisIds && !(emphasisIds.has(e.source) && emphasisIds.has(e.target));
+                return (
+                  <line
+                    key={e.id}
+                    data-organization-edge={e.id}
+                    x1={x1}
+                    y1={y1}
+                    x2={x2}
+                    y2={y2}
+                    stroke="var(--color-fg-muted, #94a3b8)"
+                    strokeOpacity={dimOrg ? 0.1 : 0.7}
+                    strokeWidth={2}
+                    strokeLinecap="round"
+                    pointerEvents="none"
+                    aria-hidden="true"
+                  />
+                );
+              }
               if (e.attribute) {
                 const dimAttr = emphasisIds && !(emphasisIds.has(e.source) && emphasisIds.has(e.target));
                 return (
@@ -453,7 +476,9 @@ export function GraphCanvas({
               const color = accent ? accentFill(accent.shade) : NEUTRAL;
               const project = n.isProject ? `project with ${n.childCount} ${n.childCount === 1 ? "memory" : "memories"}, ` : "";
               const relations = `${n.degree} ${n.degree === 1 ? "relation" : "relations"}`;
-              const label = n.attr
+              const label = n.organization
+                ? `${n.title}, organization with ${n.degree} ${n.degree === 1 ? "project" : "projects"}`
+                : n.attr
                 ? n.attrRole === "category"
                   ? `${n.title}, ${n.degree} ${n.degree === 1 ? "value" : "values"}`
                   : `${n.title}, ${n.attr} node, ${n.degree} ${n.degree === 1 ? "memory" : "memories"}`
@@ -467,6 +492,7 @@ export function GraphCanvas({
                   data-accent={accent?.accent}
                   data-selected={selected || undefined}
                   data-virtual={n.virtual || undefined}
+                  data-organization={n.organization || undefined}
                   data-attribute={n.attr}
                   data-attribute-role={n.attrRole}
                   data-highlighted={highlighted || undefined}
@@ -491,6 +517,12 @@ export function GraphCanvas({
                   {(selected || isLinkSource) && (
                     <circle r={r + 6} fill="none" stroke={RING} strokeWidth={2} strokeDasharray={isLinkSource && !selected ? "4 3" : undefined} />
                   )}
+                  {n.organization && (
+                    <>
+                      <circle r={r} fill={NEUTRAL} fillOpacity={0.18} stroke="var(--color-fg-muted, #94a3b8)" strokeWidth={3} />
+                      <circle r={r - 6} fill="none" stroke="var(--color-fg-muted, #94a3b8)" strokeWidth={1} strokeOpacity={0.8} />
+                    </>
+                  )}
                   {n.attr && n.attrRole === "category" && (
                     <circle
                       r={r}
@@ -510,7 +542,7 @@ export function GraphCanvas({
                   {n.virtual && (
                     <circle r={r + 3} fill="none" stroke={color} strokeWidth={2} strokeDasharray="6 4" data-virtual-ring="true" />
                   )}
-                  {!n.attr && <circle
+                  {!n.attr && !n.organization && <circle
                     r={r}
                     fill={color}
                     fillOpacity={n.archived ? 0.35 : n.virtual ? 0.6 : 0.9}
@@ -518,19 +550,23 @@ export function GraphCanvas({
                     strokeWidth={n.virtual ? 2 : n.archived ? 1.5 : 1}
                     strokeDasharray={n.virtual ? "6 4" : n.archived ? "3 2" : undefined}
                   />}
-                  {(current.k >= 0.5 || selected || n.isProject || n.attrRole === "category") && (
+                  {(current.k >= 0.5 || selected || n.isProject || n.organization || n.attrRole === "category") && (
                     <text
                       y={r + 13}
                       textAnchor="middle"
-                      fontSize={n.isProject || n.attrRole === "category" ? 13 : n.attr ? 10 : 11}
-                      fontWeight={n.isProject || n.attrRole === "category" ? 600 : undefined}
+                      fontSize={n.isProject || n.organization || n.attrRole === "category" ? 13 : n.attr ? 10 : 11}
+                      fontWeight={n.isProject || n.organization || n.attrRole === "category" ? 600 : undefined}
                       fill="var(--color-fg, #f1f5f9)"
                       stroke="var(--color-surface-raised, #111a2b)"
                       strokeWidth={3}
                       paintOrder="stroke"
                       pointerEvents="none"
                     >
-                      {n.attrRole === "category" ? `${n.title} · ${n.degree}` : truncate(n.title)}
+                      {n.organization
+                        ? `${n.title} · ${n.degree} ${n.degree === 1 ? "project" : "projects"}`
+                        : n.attrRole === "category"
+                          ? `${n.title} · ${n.degree}`
+                          : truncate(n.title)}
                     </text>
                   )}
                 </g>

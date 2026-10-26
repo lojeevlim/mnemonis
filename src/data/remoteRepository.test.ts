@@ -1,4 +1,4 @@
-import { createEmptyWorkspace, DomainError, SCHEMA_VERSION } from "../domain";
+import { createEmptyWorkspace, DomainError, SCHEMA_VERSION, type WorkspaceState } from "../domain";
 import { createFakeServer } from "../test/fakeServer";
 import { RemoteError, RemoteRepository } from "./remoteRepository";
 
@@ -257,6 +257,50 @@ describe("RemoteRepository project ops", () => {
     await expect(repo.createProject({ name: "acme", actor: user })).rejects.toMatchObject({ code: "duplicate_project" });
     fake.on("POST /api/ops/deleteProject", { status: 409, json: { error: { code: "project_in_use", message: "Project still has memories" } } });
     await expect(repo.deleteProject({ id: a.value.id, actor: user })).rejects.toMatchObject({ code: "project_in_use" });
+  });
+
+  it("organization ops POST the args without an actor, adopt the server state and map the error codes", async () => {
+    const { fake, repo } = setup();
+    const org = await repo.createOrganization({ name: "ROK", actor: user });
+    expect(fake.calls.at(-1)).toMatchObject({ method: "POST", path: "/api/ops/createOrganization", body: { name: "ROK" } });
+    expect(fake.calls.at(-1)!.body).not.toHaveProperty("actor");
+    expect(org.value).toMatchObject({ name: "ROK", confirmed: true });
+    expect(Object.keys(org.state.organizations)).toEqual([org.value.id]);
+    const p = await repo.createProject({ name: "VT", actor: user });
+    const assigned = await repo.assignProjectOrganization({ projectId: p.value.id, organizationId: org.value.id, actor: user });
+    expect(fake.calls.at(-1)).toMatchObject({ path: "/api/ops/assignProjectOrganization", body: { projectId: p.value.id, organizationId: org.value.id } });
+    expect(assigned.value.organizationId).toBe(org.value.id);
+    expect((await repo.assignProjectOrganization({ projectId: p.value.id, organizationId: null, actor: user })).value.organizationId).toBeNull();
+    expect(fake.calls.at(-1)!.body).toEqual({ projectId: p.value.id, organizationId: null });
+    expect((await repo.renameOrganization({ id: org.value.id, name: "ROK Inc", actor: user })).value.name).toBe("ROK Inc");
+    expect((await repo.confirmOrganization({ id: org.value.id, actor: user })).value.id).toBe(org.value.id);
+    const del = await repo.deleteOrganization({ id: org.value.id, actor: user });
+    expect(del.state.organizations).toEqual({});
+    expect(del.state.projects[p.value.id].organizationId).toBeNull();
+    await expect(repo.createOrganization({ name: "A", actor: user })).resolves.toBeDefined();
+    await expect(repo.createOrganization({ name: "a", actor: user })).rejects.toMatchObject({ code: "duplicate_organization" });
+    await expect(repo.renameOrganization({ id: "org_x", name: "z", actor: user })).rejects.toMatchObject({ code: "organization_not_found" });
+    const n = fake.calls.length;
+    for (const call of [
+      repo.createOrganization({ name: "x", actor: agent }),
+      repo.renameOrganization({ id: "x", name: "y", actor: agent }),
+      repo.deleteOrganization({ id: "x", actor: agent }),
+      repo.confirmOrganization({ id: "x", actor: agent }),
+      repo.assignProjectOrganization({ projectId: "x", organizationId: null, actor: agent }),
+    ]) {
+      await expect(call).rejects.toMatchObject({ code: "forbidden" });
+    }
+    expect(fake.calls).toHaveLength(n);
+  });
+
+  it("reads a state from a server that predates organizations (schema 3) as 'no organizations'", async () => {
+    const legacy = JSON.parse(JSON.stringify(createEmptyWorkspace())) as Record<string, unknown>;
+    delete legacy.organizations;
+    legacy.projects = { prj_1: { id: "prj_1", key: "a", name: "A", aliases: [], sources: [], collectionId: null, createdAt: "t", createdBy: "u", autoCreated: false, confirmed: true } };
+    const { repo } = setup({ state: legacy as unknown as WorkspaceState });
+    const s = await repo.load();
+    expect(s.organizations).toEqual({});
+    expect(s.projects.prj_1.organizationId).toBeNull();
   });
 
   it("sends project / projectId on createMemory and updateMemory unchanged", async () => {

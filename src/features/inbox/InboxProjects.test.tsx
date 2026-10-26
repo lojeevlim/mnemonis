@@ -63,3 +63,42 @@ describe("Inbox: projects", () => {
     expect(item("Moving")).toHaveTextContent("Project: No project");
   });
 });
+
+describe("Inbox: organizations", () => {
+  it("shows 'Organization: X (new)' for a pending memory whose project is new", async () => {
+    await store().createMemory({ title: "VT: kickoff", project: { name: "VT" }, organization: "ROK" }, { actor: agent });
+    renderPage();
+    const li = item("VT: kickoff");
+    expect(li).toHaveTextContent("Project: VT (new)");
+    expect(li).toHaveTextContent("Organization: ROK (new)");
+    const org = Object.values(store().state!.organizations)[0];
+    expect(li.textContent).not.toContain(org.id);
+  });
+
+  it("shows no organization line without one, nor for a project that is already confirmed", async () => {
+    await store().createMemory({ title: "Plain: a", project: { name: "Plain" } }, { actor: agent });
+    const known = await store().createProject({ name: "Known" });
+    const org = await store().createOrganization("ROK");
+    await store().assignProjectOrganization(known!.id, org!.id);
+    await store().createMemory({ title: "Known: b", projectId: known!.id }, { actor: agent });
+    renderPage();
+    expect(item("Plain: a")).not.toHaveTextContent("Organization");
+    expect(item("Known: b")).not.toHaveTextContent("Organization");
+  });
+
+  it("approving the memory confirms the project and its organization", async () => {
+    const m = await store().createMemory({ title: "VT: kickoff", project: { name: "VT" }, organization: "ROK" }, { actor: agent });
+    renderPage();
+    fireEvent.click(within(item("VT: kickoff")).getByRole("button", { name: "Approve VT: kickoff" }));
+    await waitFor(() => expect(Object.values(store().state!.organizations)[0].confirmed).toBe(true));
+    expect(m).toBeDefined();
+  });
+
+  it("rejecting the only proposal removes the new project and its unconfirmed organization", async () => {
+    await store().createMemory({ title: "VT: kickoff", project: { name: "VT" }, organization: "ROK" }, { actor: agent });
+    renderPage();
+    fireEvent.click(within(item("VT: kickoff")).getByRole("button", { name: "Reject VT: kickoff" }));
+    await waitFor(() => expect(Object.keys(store().state!.organizations)).toHaveLength(0));
+    expect(Object.keys(store().state!.projects)).toHaveLength(0);
+  });
+});

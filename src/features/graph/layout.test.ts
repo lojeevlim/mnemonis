@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
   clampZoom,
+  boundsOf,
   fitTransform,
+  fitView,
+  placeAttributeNodes,
   initialPositions,
   maxSpeed,
   MAX_ZOOM,
@@ -150,5 +153,103 @@ describe("hub links", () => {
       expect(d).toBeGreaterThan(30);
       expect(d).toBeLessThan(130);
     }
+  });
+});
+
+describe("fitView", () => {
+  const size = { w: 800, h: 600 };
+  it("handles empty bounds with the neutral centred view", () => {
+    expect(fitView(null, size)).toEqual({ x: 400, y: 300, k: 1 });
+    expect(boundsOf([])).toBeNull();
+    expect(fitView({ minX: 0, minY: 0, maxX: 10, maxY: 10 }, { w: 0, h: 0 })).toEqual({ x: 0, y: 0, k: 1 });
+  });
+
+  it("centres a single node and clamps the zoom to the maximum", () => {
+    const t = fitView(boundsOf([{ x: 50, y: -20 }]), size, 48, 0.15, 4);
+    expect(t.k).toBe(4);
+    expect(t.x).toBeCloseTo(400 - 50 * 4);
+    expect(t.y).toBeCloseTo(300 + 20 * 4);
+  });
+
+  it("clamps to the minimum zoom for huge bounds and honours custom limits", () => {
+    expect(fitView({ minX: -1e6, minY: -1e6, maxX: 1e6, maxY: 1e6 }, size).k).toBe(MIN_ZOOM);
+    expect(fitView({ minX: 0, minY: 0, maxX: 1e5, maxY: 10 }, size, 48, 0.5, 2).k).toBe(0.5);
+  });
+
+  it("is limited by the tighter axis for wide and tall boxes, and padding shrinks the zoom", () => {
+    const wide = fitView({ minX: 0, minY: 0, maxX: 1600, maxY: 100 }, size, 0);
+    expect(wide.k).toBeCloseTo(800 / 1600);
+    const tall = fitView({ minX: 0, minY: 0, maxX: 100, maxY: 1200 }, size, 0);
+    expect(tall.k).toBeCloseTo(600 / 1200);
+    const padded = fitView({ minX: 0, minY: 0, maxX: 1600, maxY: 100 }, size, 100);
+    expect(padded.k).toBeCloseTo(600 / 1600);
+    expect(padded.x + 800 * padded.k).toBeCloseTo(400); // box centre lands mid-viewport
+  });
+
+  it("includes node radii in the bounds", () => {
+    expect(boundsOf([{ x: 0, y: 0, r: 10 }, { x: 100, y: 50, r: 5 }])).toEqual({ minX: -10, minY: -10, maxX: 105, maxY: 55 });
+  });
+});
+
+describe("attribute nodes stay far from project clusters", () => {
+  // Two project hubs with 6 members each (hub links), plus two category hubs with values linked to members.
+  const build = (withAttr: boolean) => {
+    const ids: string[] = [];
+    const ls: Link[] = [];
+    for (const p of ["pa", "pb"]) {
+      ids.push(p);
+      for (let i = 0; i < 6; i++) {
+        ids.push(`${p}m${i}`);
+        ls.push([`${p}m${i}`, p, 60]);
+      }
+    }
+    if (withAttr) {
+      for (const c of ["category:type", "category:tag"]) {
+        ids.push(c);
+        for (let i = 0; i < 3; i++) {
+          const v = `${c}/v${i}`;
+          ids.push(v);
+          ls.push([v, c, 50]);
+          ls.push(["pa" + "m" + i, v, undefined, 0.2]);
+          ls.push(["pb" + "m" + i, v, undefined, 0.2]);
+        }
+      }
+    }
+    return { ids, ls };
+  };
+  const run = (withAttr: boolean, strip = false) => {
+    const { ids, ls } = build(withAttr);
+    const nodes = initialPositions(ids, 7).map((n) => (n.id.startsWith("category:") ? { ...n, attr: (n.id.includes("/") ? "value" : "category") as "value" | "category" } : n));
+    const placed = placeAttributeNodes(nodes, new Set(), new Map(ids.filter((i) => i.includes("/")).map((i) => [i, i.split("/")[0]])));
+    return runToSettle(strip ? placed.map((n) => ({ ...n, attr: undefined })) : placed, ls, { maxIterations: 600 }).nodes;
+  };
+  const dist = (a: SimNode, b: SimNode) => Math.hypot(a.x - b.x, a.y - b.y);
+
+  it("puts category hubs and values well away from project hubs and their members", () => {
+    const nodes = run(true);
+    const plain = nodes.filter((n) => !n.attr);
+    const attrs = nodes.filter((n) => n.attr);
+    const hubs = nodes.filter((n) => n.id === "pa" || n.id === "pb");
+    for (const cat of nodes.filter((n) => n.attr === "category")) {
+      for (const h of hubs) expect(dist(cat, h)).toBeGreaterThan(250);
+    }
+    // Baseline: same graph and start without the attribute forces (no cross repulsion, no outward bias).
+    const base = run(true, true);
+    const baseNearest = Math.min(...base.filter((n) => n.id.startsWith("category:")).flatMap((a) => base.filter((p) => !p.id.startsWith("category:")).map((p) => dist(a, p))));
+    const nearest = Math.min(...attrs.flatMap((a) => plain.map((p) => dist(a, p))));
+    expect(nearest).toBeGreaterThan(120);
+    expect(nearest).toBeGreaterThan(baseNearest + 40);
+    // members stay with their project hub despite the weak memory -> value links.
+    for (const n of plain.filter((x) => x.id.startsWith("pam"))) expect(dist(n, hubs.find((h) => h.id === "pa")!)).toBeLessThan(160);
+  });
+
+  it("is deterministic, and without attribute nodes the layout is unchanged by the attribute forces", () => {
+    expect(run(true)).toEqual(run(true));
+    const { ids, ls } = build(false);
+    const start = initialPositions(ids, 7);
+    const plain = runToSettle(start, ls, { maxIterations: 600 }).nodes;
+    const tagged = runToSettle(start.map((n) => ({ ...n, attr: undefined })), ls, { maxIterations: 600 }).nodes;
+    expect(tagged).toEqual(plain);
+    expect(placeAttributeNodes(start, new Set(), new Map())).toBe(start);
   });
 });

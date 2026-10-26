@@ -10,6 +10,7 @@ import {
   DEFAULT_LAYOUT,
   fitTransform,
   maxSpeed,
+  placeAttributeNodes,
   reconcile,
   runToSettle,
   step,
@@ -22,6 +23,10 @@ import {
 const SEED = 7;
 const DEFAULT_SIZE = { w: 800, h: 560 };
 const DRAG_THRESHOLD = 3;
+/** Memory -> value springs are weak so the far-away attribute nodes do not drag memories out of their project clusters. */
+const MEMORY_VALUE_SPRING = 0.2;
+const FIT_PADDING = 56;
+const FIT_EASE = "transform 280ms ease-out";
 
 export interface FocusRequest {
   ids: string[];
@@ -79,9 +84,18 @@ function computeLayout(prev: SimNode[], nodes: GraphNode[], edges: GraphEdge[], 
         ? [e.source, e.target, radiusOf(e.source) + radiusOf(e.target) + 45]
         : e.category
           ? [e.source, e.target, radiusOf(e.source) + radiusOf(e.target) + 22]
-          : [e.source, e.target],
+          : e.attribute
+            ? [e.source, e.target, undefined, MEMORY_VALUE_SPRING]
+            : [e.source, e.target],
     );
-  const placed = reconcile(prev, ids, links, SEED);
+  const attrOf = new Map(nodes.filter((n) => n.attr).map((n) => [n.id, n.attrRole === "category" ? ("category" as const) : ("value" as const)]));
+  const categoryOf = new Map(edges.filter((e) => e.category).map((e) => [e.source, e.target]));
+  const prevIds = new Set(prev.map((n) => n.id));
+  const placed = placeAttributeNodes(
+    reconcile(prev, ids, links, SEED).map((n) => (attrOf.has(n.id) ? { ...n, attr: attrOf.get(n.id) } : { ...n, attr: undefined })),
+    prevIds,
+    categoryOf,
+  );
   if (reduced) return { key: topologyKey(nodes, edges), nodes: runToSettle(placed, links).nodes, links, alpha: 0 };
   return { key: topologyKey(nodes, edges), nodes: placed, links, alpha: ids.length > 0 ? 1 : 0 };
 }
@@ -121,7 +135,15 @@ export function GraphCanvas({
   const key = topologyKey(nodes, edges);
   if (layout.key !== key) setLayout(computeLayout(layout.nodes, nodes, edges, reducedMotion));
 
-  const fit = useMemo(() => fitTransform(layout.nodes, size.w, size.h), [layout.nodes, size]);
+  // Auto-fit: the view follows the bounding box of all visible nodes (radii included) until the user zooms/pans
+  // (`view` set); "Fit to view" clears it again. Clamped to the min/max zoom by fitView.
+  const radii = useMemo(() => new Map(nodes.map((n) => [n.id, nodeRadius(n)])), [nodes]);
+  const fit = useMemo(
+    () => fitTransform(layout.nodes.map((n) => ({ x: n.x, y: n.y, r: radii.get(n.id) ?? 0 })), size.w, size.h, FIT_PADDING),
+    [layout.nodes, radii, size],
+  );
+  // Ease only the automatic refits of a settled layout; manual zoom/pan and live simulation frames jump.
+  const easeFit = view === null && layout.alpha === 0 && !reducedMotion;
   const current = view ?? fit;
   const fitRef = useRef(fit);
   const viewRef = useRef(current);
@@ -310,7 +332,16 @@ export function GraphCanvas({
             onClearSelection();
           }}
         />
-        <g transform={`translate(${current.x} ${current.y}) scale(${current.k})`}>
+        <g
+          data-testid="graph-viewport"
+          data-auto-fit={view === null ? "true" : "false"}
+          transform={`translate(${current.x} ${current.y}) scale(${current.k})`}
+          style={{
+            transform: `translate(${current.x}px, ${current.y}px) scale(${current.k})`,
+            transformOrigin: "0 0",
+            transition: easeFit ? FIT_EASE : "none",
+          }}
+        >
           <g>
             {edges.map((e) => {
               const a = pos.get(e.source);

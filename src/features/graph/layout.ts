@@ -12,13 +12,22 @@ export interface SimNode {
   vy: number;
   /** Pinned nodes never move under forces (user-dragged). */
   pinned?: boolean;
+  /** Attribute nodes (category hubs / their value nodes) are pushed well away from project hubs and memories. */
+  attr?: "category" | "value";
 }
 
 /** A link; the optional third item is a custom rest length (project -> child), pulled with a stronger spring. */
-export type Link = readonly [string, string, number?];
+export type Link = readonly [string, string, number?, number?];
 
 /** Spring strength multiplier for links that carry their own rest length. */
 const HUB_SPRING = 1.8;
+
+/** Repulsion multiplier between an attribute node and a non-attribute node (project hub or memory). */
+export const ATTR_REPULSION = 8;
+/** Constant outward push on category hubs, away from the centroid of the non-attribute nodes. */
+const CATEGORY_OUTWARD = 10;
+/** Ring radius (beyond the non-attribute nodes' extent) where new category hubs start. */
+const CATEGORY_RING_GAP = 220;
 
 export interface LayoutOptions {
   repulsion: number;
@@ -118,7 +127,8 @@ export function step(
         d2 = 1;
       }
       const d = Math.sqrt(d2);
-      const f = opts.repulsion / Math.max(d2, 100);
+      const cross = (nodes[i].attr !== undefined) !== (nodes[j].attr !== undefined);
+      const f = (opts.repulsion * (cross ? ATTR_REPULSION : 1)) / Math.max(d2, 100);
       const ux = dx / d;
       const uy = dy / d;
       fx[i] += ux * f;
@@ -128,7 +138,7 @@ export function step(
     }
   }
 
-  for (const [a, b, length] of links) {
+  for (const [a, b, length, strength = 1] of links) {
     const i = index.get(a);
     const j = index.get(b);
     if (i === undefined || j === undefined || i === j) continue;
@@ -136,13 +146,39 @@ export function step(
     const dy = nodes[j].y - nodes[i].y;
     const d = Math.sqrt(dx * dx + dy * dy) || 1;
     const f =
-      length === undefined ? opts.springStrength * (d - opts.springLength) : opts.springStrength * HUB_SPRING * (d - length);
+      length === undefined
+        ? opts.springStrength * strength * (d - opts.springLength)
+        : opts.springStrength * HUB_SPRING * strength * (d - length);
     const ux = dx / d;
     const uy = dy / d;
     fx[i] += ux * f;
     fy[i] += uy * f;
     fx[j] -= ux * f;
     fy[j] -= uy * f;
+  }
+
+  // Category hubs get a weak outward bias from the centroid of everything that is not an attribute node.
+  let cx = 0;
+  let cy = 0;
+  let plain = 0;
+  for (const node of nodes) {
+    if (node.attr === undefined) {
+      cx += node.x;
+      cy += node.y;
+      plain++;
+    }
+  }
+  if (plain > 0) {
+    cx /= plain;
+    cy /= plain;
+    for (let i = 0; i < n; i++) {
+      if (nodes[i].attr !== "category") continue;
+      const dx = nodes[i].x - cx;
+      const dy = nodes[i].y - cy;
+      const d = Math.hypot(dx, dy) || 1;
+      fx[i] += (dx / d) * CATEGORY_OUTWARD;
+      fy[i] += (dy / d) * CATEGORY_OUTWARD;
+    }
   }
 
   return nodes.map((node, i) => {
@@ -190,6 +226,45 @@ export function runToSettle(
   return { nodes: current, iterations: maxIterations, settled: maxSpeed(current) < threshold };
 }
 
+/**
+ * Places freshly added attribute nodes: category hubs on an outer ring around the centroid of the non-attribute nodes
+ * (evenly spaced by order), value nodes beside their category hub. Existing nodes (`known`) are left alone.
+ * `categoryOf` maps a value node id to its category hub id.
+ */
+export function placeAttributeNodes(
+  nodes: SimNode[],
+  known: ReadonlySet<string>,
+  categoryOf: ReadonlyMap<string, string>,
+): SimNode[] {
+  const plain = nodes.filter((n) => n.attr === undefined);
+  const hubs = nodes.filter((n) => n.attr === "category");
+  if (hubs.length === 0 || hubs.every((h) => known.has(h.id))) return nodes;
+  let cx = 0;
+  let cy = 0;
+  for (const p of plain) {
+    cx += p.x / plain.length;
+    cy += p.y / plain.length;
+  }
+  let extent = 0;
+  for (const p of plain) extent = Math.max(extent, Math.hypot(p.x - cx, p.y - cy));
+  const ring = extent + CATEGORY_RING_GAP;
+  const out = new Map(nodes.map((n) => [n.id, n]));
+  hubs.forEach((h, i) => {
+    if (known.has(h.id)) return;
+    const a = -Math.PI / 2 + (i / hubs.length) * Math.PI * 2;
+    out.set(h.id, { ...h, x: cx + Math.cos(a) * ring, y: cy + Math.sin(a) * ring });
+  });
+  let seq = 0;
+  for (const v of nodes) {
+    if (v.attr !== "value" || known.has(v.id)) continue;
+    const hub = out.get(categoryOf.get(v.id) ?? "");
+    if (!hub) continue;
+    const a = seq++ * 2.399963; // golden angle: deterministic spread around the hub
+    out.set(v.id, { ...v, x: hub.x + Math.cos(a) * 40, y: hub.y + Math.sin(a) * 40 });
+  }
+  return nodes.map((n) => out.get(n.id)!);
+}
+
 export interface ViewTransform {
   x: number;
   y: number;
@@ -201,29 +276,59 @@ export const MIN_ZOOM = 0.15;
 export const MAX_ZOOM = 4;
 export const clampZoom = (k: number): number => Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, k));
 
+export interface Bounds {
+  minX: number;
+  minY: number;
+  maxX: number;
+  maxY: number;
+}
+
+/** Bounding box of nodes, each grown by its optional radius `r`; null when empty. */
+export function boundsOf(nodes: readonly { x: number; y: number; r?: number }[]): Bounds | null {
+  if (nodes.length === 0) return null;
+  const b: Bounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+  for (const n of nodes) {
+    const r = n.r ?? 0;
+    b.minX = Math.min(b.minX, n.x - r);
+    b.minY = Math.min(b.minY, n.y - r);
+    b.maxX = Math.max(b.maxX, n.x + r);
+    b.maxY = Math.max(b.maxY, n.y + r);
+  }
+  return b;
+}
+
+/**
+ * Pure fit: the transform that centres `bounds` in `size` with `padding` on every side. The zoom is clamped to
+ * [minZoom, maxZoom] (a single point or tiny box therefore does not zoom in past maxZoom). Empty bounds (null) or an
+ * unusable viewport give the neutral centred view at k = 1 (clamped).
+ */
+export function fitView(
+  bounds: Bounds | null,
+  size: { w: number; h: number },
+  padding = 48,
+  minZoom = MIN_ZOOM,
+  maxZoom = MAX_ZOOM,
+): ViewTransform {
+  if (!bounds || size.w <= 0 || size.h <= 0) {
+    return { x: size.w / 2, y: size.h / 2, k: Math.min(maxZoom, Math.max(minZoom, 1)) };
+  }
+  const w = Math.max(bounds.maxX - bounds.minX, 1);
+  const h = Math.max(bounds.maxY - bounds.minY, 1);
+  const availW = Math.max(size.w - padding * 2, 1);
+  const availH = Math.max(size.h - padding * 2, 1);
+  const k = Math.min(maxZoom, Math.max(minZoom, Math.min(availW / w, availH / h)));
+  return { k, x: size.w / 2 - ((bounds.minX + bounds.maxX) / 2) * k, y: size.h / 2 - ((bounds.minY + bounds.maxY) / 2) * k };
+}
+
 /** Transform that centers the nodes' bounding box in a width x height viewport. */
 export function fitTransform(
-  nodes: readonly { x: number; y: number }[],
+  nodes: readonly { x: number; y: number; r?: number }[],
   width: number,
   height: number,
   padding = 48,
   maxScale = 1.5,
 ): ViewTransform {
-  if (nodes.length === 0 || width <= 0 || height <= 0) return { x: width / 2, y: height / 2, k: 1 };
-  let minX = Infinity;
-  let minY = Infinity;
-  let maxX = -Infinity;
-  let maxY = -Infinity;
-  for (const n of nodes) {
-    minX = Math.min(minX, n.x);
-    minY = Math.min(minY, n.y);
-    maxX = Math.max(maxX, n.x);
-    maxY = Math.max(maxY, n.y);
-  }
-  const w = Math.max(maxX - minX, 1);
-  const h = Math.max(maxY - minY, 1);
-  const k = clampZoom(Math.min(maxScale, (width - padding * 2) / w, (height - padding * 2) / h));
-  return { k, x: width / 2 - ((minX + maxX) / 2) * k, y: height / 2 - ((minY + maxY) / 2) * k };
+  return fitView(boundsOf(nodes), { w: width, h: height }, padding, MIN_ZOOM, Math.min(MAX_ZOOM, maxScale));
 }
 
 /** Zoom by `factor` keeping the screen point (px, py) fixed. */

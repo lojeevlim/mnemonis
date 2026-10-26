@@ -506,6 +506,36 @@ describe("Graph: colours per project", () => {
   });
 });
 
+describe("Graph: auto-fit", () => {
+  const vp = (c: HTMLElement) => c.querySelector<SVGGElement>("[data-testid=graph-viewport]")!;
+
+  it("refits when a category is toggled, stops after a manual zoom and resumes on Fit to view", () => {
+    const { container } = renderPage();
+    expect(vp(container)).toHaveAttribute("data-auto-fit", "true");
+    const before = vp(container).getAttribute("transform");
+    fireEvent.click(screen.getByLabelText("Collections"));
+    expect(vp(container)).toHaveAttribute("data-auto-fit", "true");
+    const withCategory = vp(container).getAttribute("transform");
+    expect(withCategory).not.toBe(before); // the bounding box grew, so the view refit
+
+    fireEvent.keyDown(screen.getByRole("group", { name: /Knowledge graph canvas/ }), { key: "+" });
+    expect(vp(container)).toHaveAttribute("data-auto-fit", "false");
+    const manual = vp(container).getAttribute("transform");
+    fireEvent.click(screen.getByLabelText("Types")); // no refit while the user is in control
+    expect(vp(container)).toHaveAttribute("data-auto-fit", "false");
+    expect(vp(container).getAttribute("transform")).toBe(manual);
+
+    fireEvent.click(screen.getByRole("button", { name: "Fit to view" }));
+    expect(vp(container)).toHaveAttribute("data-auto-fit", "true");
+    expect(vp(container).getAttribute("transform")).not.toBe(manual);
+  });
+
+  it("jumps instead of easing under reduced motion", () => {
+    const { container } = renderPage();
+    expect(vp(container).style.transition).toBe("none");
+  });
+});
+
 describe("Graph: category hubs and value nodes", () => {
   const attrEls = (c: HTMLElement, kind?: string, role?: string) =>
     [...c.querySelectorAll<SVGGElement>(`[data-attribute${kind ? `="${kind}"` : ""}]${role ? `[data-attribute-role="${role}"]` : ""}`)];

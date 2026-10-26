@@ -24,7 +24,7 @@ docs/IMPLEMENTATION_PLAN.md   (short copy of this plan, per spec)
 ```
 
 **Screens (all 8 nav items)**
-1. Overview — stats (memories, waiting for review, archived, saved changes), recent changes, recent activity, top topics, MCP status (shown as "Not connected — backend pending").
+1. Overview — stats (memories, waiting for review, archived, saved changes), recent changes, recent activity, top topics, MCP status (derived from the signed-in user's tokens: Local only, Not set up, Waiting for client, Connected, Idle).
 2. Memories — list + filters (type/collection/status), search, create/edit/archive in a detail Drawer/panel, Markdown, tags, relations, revision history with rollback. Your own edits auto-save to Long Term Memory with an automatic note; changes written by agents wait for review (Approve / Reject in the drawer or the Inbox).
 3. Knowledge Graph — **custom** SVG/canvas force layout (own small simulation, no graph lib): zoom/pan, node select → detail panel, create/remove user-defined edges, filters, search, isolated-node highlighting. Edges come from stored relations, plus view-only title-prefix links (`<project>: ...` -> `<project>`, label "part of") that are derived at render time and never saved. Any memory with a `<project>: ` prefix and no memory titled `<project>` yields a project drawn as a virtual hub (dashed big circle, no memory required; legacy `<project> ...` titles join it once a `<project>: ...` memory exists). Its side panel offers to create the real memory, which then replaces the hub.
    Graph colours are per project: each project (hub, its `<project>: ...` memories and followers) gets a stable colour from the lojee-ui accent palettes (`data-accent`); memories without a project are neutral.

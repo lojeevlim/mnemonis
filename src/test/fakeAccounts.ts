@@ -106,6 +106,12 @@ export function createFakeAccounts(opts: { email?: string; password?: string; re
     if (method === "DELETE" && url.pathname.startsWith("/api/tokens/")) {
       const t = s.tokens.find((x) => x.id === url.pathname.split("/").pop());
       if (!t) return err(404, "not_found", "No such token");
+      if (url.searchParams.get("permanent") === "1") {
+        const dead = t.revokedAt !== null || (t.expiresAt !== null && Date.parse(t.expiresAt) <= Date.now());
+        if (!dead) return err(409, "token_active", "Revoke the token before removing it");
+        s.tokens.splice(s.tokens.indexOf(t), 1);
+        return json(204);
+      }
       t.revokedAt ??= "2026-02-01T00:00:00Z";
       return json(204);
     }

@@ -1,12 +1,12 @@
 import { useCallback, useEffect, useId, useState, type FormEvent } from "react";
-import { Alert, AlertDialog, Badge, Button, Card, CodeSnippet, Input } from "lojee-ui";
+import { Alert, AlertDialog, Badge, Button, Card, CodeSnippet, Input, Table } from "lojee-ui";
 import { InlineError } from "../../components/InlineError";
 import { PageHeader } from "../../components/PageHeader";
 import { useToast } from "../../components/ToastProvider";
 import { ApiError, describeApiError } from "../../data/accountApi";
 import { formatDateTime } from "../../components/memoryMeta";
 import { serverAuthProvider } from "../auth/serverAuthProvider";
-import { createToken, listTokens, revokeToken, tokenStatus, type CreatedToken, type McpToken } from "./tokensApi";
+import { createToken, listTokens, removeToken, revokeToken, tokenStatus, type CreatedToken, type McpToken } from "./tokensApi";
 
 export interface McpTool {
   name: string;
@@ -45,6 +45,44 @@ export function claudeCodeCommand(mcpUrl: string | null, token = "<token>"): str
   return `claude mcp add --transport http mnemonis ${mcpUrl === null ? MCP_URL_PLACEHOLDER : shellQuote(mcpUrl)} --header ${shellQuote(`Authorization: Bearer ${token}`)}`;
 }
 
+/** For clients that only speak stdio: mcp-remote bridges to the HTTP endpoint. */
+export function mcpRemoteCommand(mcpUrl: string | null, token = "<token>"): string {
+  return `npx -y mcp-remote ${mcpUrl === null ? MCP_URL_PLACEHOLDER : shellQuote(mcpUrl)} --header ${shellQuote(`Authorization: Bearer ${token}`)}`;
+}
+
+/** Same shape as the Claude Code command: the token goes in the Authorization header. */
+export function codexCommand(mcpUrl: string | null, token = "<token>"): string {
+  return `codex mcp add --transport http mnemonis ${mcpUrl === null ? MCP_URL_PLACEHOLDER : shellQuote(mcpUrl)} --header ${shellQuote(`Authorization: Bearer ${token}`)}`;
+}
+
+export function geminiCommand(mcpUrl: string | null, token = "<token>"): string {
+  return `gemini mcp add --transport http mnemonis ${mcpUrl === null ? MCP_URL_PLACEHOLDER : shellQuote(mcpUrl)} --header ${shellQuote(`Authorization: Bearer ${token}`)}`;
+}
+
+/**
+ * Optional rule for the user's own CLAUDE.md / AGENTS.md. The adapter already sends the same guidance as MCP server
+ * instructions, but clients that ignore server instructions need it in their own file. Keep it short and in sync with the adapter.
+ */
+export const CLIENT_INSTRUCTIONS_MD = `## Mnemonis memory (MCP)
+
+- Mnemonis is my long-term memory. Use it without being asked: at the start of work in a project, \`memory_search\` for the project name.
+- Save only when work is finished or a decision is final (exploration, implementation, plan, fix). Search first; use \`memory_update\` instead of duplicating.
+- Title memories \`<project>: <data>\` (project = repo or directory name). Tag them with the project name plus specific lowercase topic tags.
+- Pass \`project\` {name, repo} on save (repo = \`git remote get-url origin\`, never a local path or credentials).
+- Pass \`organization\` with a new project: the existing project's organization if it has one, else the owner on the git remote; use "Personal" when that owner is me.
+- Leave \`collection\` unset: the server files the memory into the project's folder.
+- Do not add "part of" or "shares topic" links yourself; the server creates them.
+- Every write is a draft that I approve in the Mnemonis Inbox. Never say it is permanently saved. Never store secrets.
+`;
+
+type AiClient = "claude" | "codex" | "gemini" | "other";
+const AI_CLIENTS: { id: AiClient; label: string; hint: string }[] = [
+  { id: "claude", label: "Claude Code", hint: "Run this once in a terminal." },
+  { id: "codex", label: "Codex", hint: "Run this once in a terminal." },
+  { id: "gemini", label: "Gemini CLI", hint: "Run this once in a terminal." },
+  { id: "other", label: "Other (Cursor, VS Code, Windsurf)", hint: "Clients with remote MCP support can use the URL and an Authorization header directly. For stdio-only clients, use this bridge command as the server command." },
+];
+
 function ToolList({ title, tools, badge }: { title: string; tools: McpTool[]; badge: string }) {
   return (
     <Card variant="outline" padding="sm" title={title}>
@@ -78,6 +116,7 @@ function TokensCard({ mcpUrl }: { mcpUrl: string | null }) {
   // The full secret lives in component state only, for as long as this card is open.
   const [created, setCreated] = useState<CreatedToken | null>(null);
   const [revoking, setRevoking] = useState<McpToken | null>(null);
+  const [removing, setRemoving] = useState<McpToken | null>(null);
 
   const reload = useCallback(async () => {
     try {
@@ -131,7 +170,26 @@ function TokensCard({ mcpUrl }: { mcpUrl: string | null }) {
     }
   };
 
-  const command = claudeCodeCommand(mcpUrl, created?.token);
+  const doRemove = async (t: McpToken) => {
+    try {
+      await removeToken(t.id);
+      toast(`Token "${t.label}" removed`, "success");
+      await reload();
+    } catch (err) {
+      setError(describeApiError(err));
+    }
+  };
+
+  const [client, setClient] = useState<AiClient>("claude");
+  const selected = AI_CLIENTS.find((c) => c.id === client)!;
+  const command =
+    client === "claude"
+      ? claudeCodeCommand(mcpUrl, created?.token)
+      : client === "codex"
+        ? codexCommand(mcpUrl, created?.token)
+        : client === "gemini"
+          ? geminiCommand(mcpUrl, created?.token)
+        : mcpRemoteCommand(mcpUrl, created?.token);
   const copy = async () => {
     try {
       await navigator.clipboard.writeText(command);
@@ -174,57 +232,53 @@ function TokensCard({ mcpUrl }: { mcpUrl: string | null }) {
           ) : tokens.length === 0 ? (
             <p className="text-sm text-fg-muted">No tokens yet.</p>
           ) : (
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm">
-                <caption className="sr-only">Your MCP access tokens</caption>
-                <thead className="text-xs text-fg-muted">
-                  <tr>
-                    <th className="py-1 pr-3 font-medium">Name</th>
-                    <th className="py-1 pr-3 font-medium">Prefix</th>
-                    <th className="py-1 pr-3 font-medium">Created</th>
-                    <th className="py-1 pr-3 font-medium">Last used</th>
-                    <th className="py-1 pr-3 font-medium">Expires</th>
-                    <th className="py-1 pr-3 font-medium">Status</th>
-                    <th className="py-1 font-medium">
-                      <span className="sr-only">Actions</span>
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border">
-                  {tokens.map((t) => {
+            <Table<McpToken>
+              rowKey="id"
+              variant="lined"
+              size="sm"
+              hoverable={false}
+              responsive="scroll"
+              data={tokens}
+              columns={[
+                { key: "label", header: "Name" },
+                { key: "prefix", header: "Prefix", render: (t) => <code>{t.prefix}</code> },
+                { key: "createdAt", header: "Created", render: (t) => when(t.createdAt) },
+                { key: "lastUsedAt", header: "Last used", render: (t) => when(t.lastUsedAt) },
+                { key: "expiresAt", header: "Expires", render: (t) => when(t.expiresAt) },
+                {
+                  key: "status",
+                  header: "Status",
+                  render: (t) => {
                     const status = tokenStatus(t);
                     return (
-                      <tr key={t.id}>
-                        <td className="py-2 pr-3">{t.label}</td>
-                        <td className="py-2 pr-3">
-                          <code>{t.prefix}</code>
-                        </td>
-                        <td className="py-2 pr-3">{when(t.createdAt)}</td>
-                        <td className="py-2 pr-3">{when(t.lastUsedAt)}</td>
-                        <td className="py-2 pr-3">{when(t.expiresAt)}</td>
-                        <td className="py-2 pr-3">
-                          <Badge variant="soft" size="sm" color={STATUS_COLOR[status]}>
-                            {status}
-                          </Badge>
-                        </td>
-                        <td className="py-2 text-right">
-                          {status === "Active" && (
-                            <Button size="sm" variant="outline" onClick={() => setRevoking(t)}>
-                              Revoke
-                            </Button>
-                          )}
-                        </td>
-                      </tr>
+                      <Badge variant="soft" size="sm" color={STATUS_COLOR[status]}>
+                        {status}
+                      </Badge>
                     );
-                  })}
-                </tbody>
-              </table>
-            </div>
+                  },
+                },
+                {
+                  key: "actions",
+                  header: <span className="sr-only">Actions</span>,
+                  align: "right",
+                  render: (t) =>
+                    tokenStatus(t) === "Active" ? (
+                      <Button size="sm" variant="outline" onClick={() => setRevoking(t)}>
+                        Revoke
+                      </Button>
+                    ) : (
+                      <Button size="sm" variant="destructive" onClick={() => setRemoving(t)}>
+                        Remove
+                      </Button>
+                    ),
+                },
+              ]}
+            />
           )}
         </div>
       </Card>
 
-      <Card variant="outline" padding="sm" title="Connect Claude Code">
+      <Card variant="outline" padding="sm" title="Connect an AI client">
         <div className="space-y-3">
           {created ? (
             <Alert variant="warning" title="Copy your command now: it is shown once">
@@ -236,6 +290,20 @@ function TokensCard({ mcpUrl }: { mcpUrl: string | null }) {
               Create a token above and the full command appears here, ready to run in a terminal. Until then this is a placeholder.
             </p>
           )}
+          <div role="group" aria-label="AI client" className="flex flex-wrap gap-2">
+            {AI_CLIENTS.map((c) => (
+              <button
+                key={c.id}
+                type="button"
+                aria-pressed={c.id === client}
+                onClick={() => setClient(c.id)}
+                className={`rounded-md border px-3 py-1 text-sm ${c.id === client ? "border-accent-500 bg-surface-muted font-medium text-fg" : "border-border text-fg-muted hover:bg-surface-muted"}`}
+              >
+                {c.label}
+              </button>
+            ))}
+          </div>
+          <p className="text-sm text-fg-muted">{selected.hint}</p>
           <CodeSnippet code={command} language="bash" title="Terminal" />
           <div className="flex flex-wrap gap-2">
             <Button size="sm" variant="outline" disabled={!created} onClick={() => void copy()}>
@@ -261,6 +329,20 @@ function TokensCard({ mcpUrl }: { mcpUrl: string | null }) {
           const t = revoking;
           setRevoking(null);
           if (t) void doRevoke(t);
+        }}
+      />
+
+      <AlertDialog
+        open={removing !== null}
+        onClose={() => setRemoving(null)}
+        variant="destructive"
+        title={removing ? `Remove "${removing.label}"?` : "Remove token?"}
+        description="This deletes the token's record from your list. It is already unusable. This cannot be undone."
+        confirmLabel="Remove token"
+        onConfirm={() => {
+          const t = removing;
+          setRemoving(null);
+          if (t) void doRemove(t);
         }}
       />
     </>
@@ -318,6 +400,14 @@ export function McpPage() {
       </Card>
 
       <TokensCard mcpUrl={mcpUrl} />
+
+      <Card variant="outline" padding="sm" title="Instructions for your AI client (optional)">
+        <p className="mb-2 text-sm text-fg-muted">
+          The adapter already sends these rules to your client as MCP server instructions. Some clients ignore them, so for the most
+          reliable behaviour add this to your <code>CLAUDE.md</code> (or <code>AGENTS.md</code>), globally or per project.
+        </p>
+        <CodeSnippet code={CLIENT_INSTRUCTIONS_MD} language="markdown" title="CLAUDE.md" />
+      </Card>
 
       <section aria-label="MCP tools" className="grid gap-3 lg:grid-cols-2">
         <ToolList title="Read tools" tools={READ_TOOLS} badge="Read" />

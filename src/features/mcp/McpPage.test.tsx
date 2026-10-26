@@ -8,7 +8,7 @@ import { resetWorkspace } from "../../test/helpers";
 import { AuthContextProvider } from "../auth/AuthContext";
 import { clearSession, SESSION_STORAGE_KEY } from "../auth/session";
 import { safeMcpUrl } from "../auth/serverAuthProvider";
-import { claudeCodeCommand, McpPage, READ_TOOLS, shellQuote, WRITE_TOOLS } from "./McpPage";
+import { claudeCodeCommand, CLIENT_INSTRUCTIONS_MD, codexCommand, geminiCommand, McpPage, mcpRemoteCommand, READ_TOOLS, shellQuote, WRITE_TOOLS } from "./McpPage";
 import { tokenStatus } from "./tokensApi";
 
 let fake: ReturnType<typeof createFakeAccounts>;
@@ -157,8 +157,13 @@ describe("MCP page tokens", () => {
     expect(within(within(table).getByText("Old").closest("tr")!).getByText("mn_old00")).toBeInTheDocument();
     expect(within(table).getAllByText("Never").length).toBeGreaterThan(0);
     // Only active tokens can be revoked.
-    expect(within(screen.getByText("Gone", { selector: "td" }).closest("tr")!).queryByRole("button")).not.toBeInTheDocument();
-    expect(within(screen.getByText("Lapsed", { selector: "td" }).closest("tr")!).queryByRole("button")).not.toBeInTheDocument();
+    // Revoked and expired tokens can only be removed; they cannot be revoked again.
+    for (const label of ["Gone", "Lapsed"]) {
+      const row = within(screen.getByText(label, { selector: "td" }).closest("tr")!);
+      expect(row.queryByRole("button", { name: "Revoke" })).not.toBeInTheDocument();
+      expect(row.getByRole("button", { name: "Remove" })).toBeInTheDocument();
+    }
+    expect(within(screen.getByText("Old", { selector: "td" }).closest("tr")!).queryByRole("button", { name: "Remove" })).not.toBeInTheDocument();
     expect(within(screen.getByText("Old", { selector: "td" }).closest("tr")!).getByRole("button", { name: "Revoke" })).toBeInTheDocument();
   });
 
@@ -180,6 +185,29 @@ describe("MCP page tokens", () => {
     expect(await screen.findByText("Revoked")).toBeInTheDocument();
     // Revoking the token that was just revealed also drops the revealed command.
     expect(document.body.textContent).not.toContain(MCP_TOKEN_SECRET);
+  });
+
+  it("removes a revoked token only after a confirm, and deletes it from the list", async () => {
+    await renderSignedIn();
+    fireEvent.change(screen.getByLabelText("Token name"), { target: { value: "Laptop" } });
+    fireEvent.click(screen.getByRole("button", { name: "Create token" }));
+    const row = async () => within((await screen.findByText("Laptop", { selector: "td" })).closest("tr")!);
+    fireEvent.click(await (await row()).findByRole("button", { name: "Revoke" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Revoke token" }));
+    fireEvent.click(await (await row()).findByRole("button", { name: "Remove" }));
+    expect(screen.getByText(/deletes the token's record/)).toBeInTheDocument();
+    const deletes = () => fake.calls.filter((c) => c.method === "DELETE" && c.path === "/api/tokens/t1").length;
+    expect(deletes()).toBe(1); // only the revoke so far
+    fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+    expect(deletes()).toBe(1);
+    expect(fake.state.tokens).toHaveLength(1);
+
+    fireEvent.click(await (await row()).findByRole("button", { name: "Remove" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Remove token" }));
+    await waitFor(() => expect(deletes()).toBe(2));
+    expect(fake.state.tokens).toHaveLength(0);
+    await waitFor(() => expect(screen.queryByText("Laptop", { selector: "td" })).not.toBeInTheDocument());
+    expect(await screen.findByText("No tokens yet.")).toBeInTheDocument();
   });
 
   it("reports the token limit", async () => {
@@ -249,5 +277,30 @@ describe("shell safety of the copied command", () => {
     // nothing dangerous survives outside single quotes
     const outside = hostile.replace(/'(?:[^']|'\\'')*'/g, "");
     expect(outside).not.toMatch(/[$`;|&()]/);
+  });
+});
+
+describe("MCP page client instructions", () => {
+  it("offers a CLAUDE.md snippet with the project, organization and approval rules", async () => {
+    await renderSignedIn();
+    expect(await screen.findByText("Instructions for your AI client (optional)")).toBeInTheDocument();
+    for (const rule of ["`project`", "`organization`", "Personal", "Inbox"]) expect(CLIENT_INSTRUCTIONS_MD).toContain(rule);
+    expect(CLIENT_INSTRUCTIONS_MD).not.toMatch(/mn_[A-Za-z0-9]/);
+  });
+});
+
+describe("MCP page client toggle", () => {
+  it("switches the command between Claude Code, Codex and other clients", async () => {
+    await renderSignedIn();
+    expect(await screen.findByText("No tokens yet.")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Claude Code" })).toHaveAttribute("aria-pressed", "true");
+    fireEvent.click(screen.getByRole("button", { name: "Codex" }));
+    expect(document.body.textContent).toContain(codexCommand("http://localhost:8788/mcp"));
+    expect(codexCommand("http://localhost:8788/mcp")).toBe("codex mcp add --transport http mnemonis 'http://localhost:8788/mcp' --header 'Authorization: Bearer <token>'");
+    fireEvent.click(screen.getByRole("button", { name: "Gemini CLI" }));
+    expect(document.body.textContent).toContain(geminiCommand("http://localhost:8788/mcp"));
+    expect(geminiCommand("http://localhost:8788/mcp")).toBe("gemini mcp add --transport http mnemonis 'http://localhost:8788/mcp' --header 'Authorization: Bearer <token>'");
+    fireEvent.click(screen.getByRole("button", { name: /^Other/ }));
+    expect(document.body.textContent).toContain(mcpRemoteCommand("http://localhost:8788/mcp"));
   });
 });

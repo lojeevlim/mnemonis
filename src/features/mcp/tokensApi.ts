@@ -33,6 +33,11 @@ export async function revokeToken(id: string): Promise<void> {
   await apiRequest(`/api/tokens/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
+/** Permanently deletes the record of a revoked or expired token (the server refuses an active one). */
+export async function removeToken(id: string): Promise<void> {
+  await apiRequest(`/api/tokens/${encodeURIComponent(id)}?permanent=1`, { method: "DELETE" });
+}
+
 export type TokenStatus = "Active" | "Revoked" | "Expired";
 
 export function tokenStatus(t: Pick<McpToken, "revokedAt" | "expiresAt">, now = Date.now()): TokenStatus {

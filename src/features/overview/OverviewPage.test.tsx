@@ -17,7 +17,8 @@ describe("OverviewPage", () => {
     }
     expect(screen.getByText("Recent activity")).toBeInTheDocument();
     expect(screen.getByText("Frequently connected topics")).toBeInTheDocument();
-    expect(screen.getByText(/Not connected — backend not built yet/)).toBeInTheDocument();
+    expect(screen.getByText("MCP status")).toBeInTheDocument();
+    expect(screen.getByText("Local only")).toBeInTheDocument();
     expect(screen.queryByRole("link", { name: "#Demo" })).not.toBeInTheDocument();
     // The seed carries 2 agent proposals and 1 agent link, all counted: the stat links to the Inbox.
     expect(within(stats).getByRole("link", { name: /open Inbox/ })).toHaveAttribute("href", "/inbox");

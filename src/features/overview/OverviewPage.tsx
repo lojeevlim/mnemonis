@@ -1,12 +1,13 @@
 import { useMemo } from "react";
 import { Link } from "react-router-dom";
-import { Badge, Card, EmptyState, Stat, Timeline, type TimelineItem } from "lojee-ui";
+import { Card, EmptyState, Stat, Timeline, type TimelineItem } from "lojee-ui";
 import { DemoBadge } from "../../components/DemoBadge";
 import { PageHeader } from "../../components/PageHeader";
 import { StatusBadge } from "../../components/StatusBadge";
 import { formatDateTime, formatRelative, isDemoMemory } from "../../components/memoryMeta";
 import { DEMO_TAG } from "../../data/seed";
 import { useWorkspace } from "../../stores/workspaceStore";
+import { McpStatusCard } from "./McpStatusCard";
 import { frequentTopics, overviewStats, recentActivity, recentChanges } from "./selectors";
 
 export function OverviewPage() {
@@ -122,14 +123,7 @@ export function OverviewPage() {
           )}
         </Card>
 
-        <Card title="MCP status" variant="outline" padding="sm">
-          <div className="flex items-start gap-3">
-            <Badge variant="soft" color="slate" size="sm">
-              Not connected
-            </Badge>
-            <p className="text-sm text-fg-muted">Not connected — backend not built yet. AI clients will connect here over MCP once it ships.</p>
-          </div>
-        </Card>
+        <McpStatusCard />
       </div>
     </div>
   );

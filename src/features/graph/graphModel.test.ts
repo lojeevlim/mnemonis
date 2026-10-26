@@ -17,6 +17,8 @@ import {
   filterGraph,
   isolatedNodes,
   searchNodes,
+  withAttributeNodes,
+  MAX_ATTRIBUTE_NODES,
   type Graph,
   type GraphEdge,
   type GraphNode,
@@ -448,5 +450,81 @@ describe("node.project", () => {
     expect(f.nodes.map((n) => n.id).sort()).toEqual(["b", "project:vt"]);
     for (const n of f.nodes) expect(n.project).toBe(g.nodes.find((m) => m.id === n.id)!.project);
     expect(projectOf(f, "b")).toBe("vt");
+  });
+});
+
+describe("withAttributeNodes", () => {
+  const collections = { c1: { name: "Work" }, __proto__x: { name: "Odd" } };
+  const base = (): Graph => ({
+    nodes: [
+      node("a", { collectionId: "c1", tags: ["Red", "blue"], type: "fact" }),
+      node("b", { collectionId: "c1", tags: ["red"], type: "task", status: "pending" }),
+      node("c", { tags: ["solo", "RED"], type: "fact", archived: true, status: "saved" }),
+      node("project:p", { virtual: true, isProject: true, type: "project", tags: ["red"], collectionId: "c1" }),
+    ],
+    edges: [edge("a", "b")],
+  });
+  const ids = (g: Graph, kind?: string) => g.nodes.filter((n) => n.attr && (!kind || n.attr === kind)).map((n) => n.id).sort();
+
+  it("returns the very same graph with no kinds (nodes and edges byte-identical)", () => {
+    const g = base();
+    expect(withAttributeNodes(g, [], collections)).toBe(g);
+    expect(JSON.stringify(withAttributeNodes(g, new Set(), collections))).toBe(JSON.stringify(g));
+  });
+
+  it("adds collection nodes and edges; memories without a collection get none; hubs never", () => {
+    const g = withAttributeNodes(base(), ["collection"], collections);
+    expect(ids(g)).toEqual(["collection:c1"]);
+    expect(g.nodes.find((n) => n.id === "collection:c1")!.title).toBe("Work");
+    expect(g.edges.filter((e) => e.attribute).map((e) => `${e.source}>${e.target}`).sort()).toEqual(["a>collection:c1", "b>collection:c1"]);
+  });
+
+  it("adds type nodes", () => {
+    const g = withAttributeNodes(base(), ["type"], collections);
+    expect(ids(g)).toEqual(["type:fact", "type:task"]); // not the hub's "project" type
+    expect(g.edges.filter((e) => e.attribute && e.target === "type:fact").map((e) => e.source).sort()).toEqual(["a", "c"]);
+  });
+
+  it("adds status nodes derived from the archived flag and status", () => {
+    const g = withAttributeNodes(base(), ["status"], collections);
+    expect(ids(g)).toEqual(["status:archived", "status:pending", "status:saved"]);
+    expect(g.edges.find((e) => e.attribute && e.source === "c")!.target).toBe("status:archived");
+  });
+
+  it("adds tag nodes only for tags used by two memories, case-insensitively and once per memory", () => {
+    const g = withAttributeNodes(base(), ["tag"], collections);
+    expect(ids(g)).toEqual(["tag:red"]);
+    expect(g.edges.filter((e) => e.attribute).map((e) => e.source).sort()).toEqual(["a", "b", "c"]);
+  });
+
+  it("leaves existing nodes, edges, degrees and counts untouched", () => {
+    const g = base();
+    const out = withAttributeNodes(g, ["collection", "type", "tag", "status"], collections);
+    expect(out.nodes.slice(0, g.nodes.length)).toEqual(g.nodes);
+    expect(out.edges.slice(0, g.edges.length)).toEqual(g.edges);
+    const memories = out.nodes.filter((n) => !n.attr);
+    expect(connectedComponents(memories, out.edges.filter((e) => !e.attribute))).toEqual(connectedComponents(g.nodes, g.edges));
+    expect(new Set(out.nodes.map((n) => n.id)).size).toBe(out.nodes.length);
+  });
+
+  it("caps each kind at the most-used attributes", () => {
+    const nodes = Array.from({ length: 100 }, (_, i) => node(`m${i}`, { collectionId: `col${i}`, tags: [`t${i}`, "common", `pair${i % 50}`, `alt${i % 49}`] }));
+    const many = Object.fromEntries(nodes.map((n) => [n.collectionId!, { name: n.collectionId! }]));
+    const g = withAttributeNodes({ nodes, edges: [] }, ["collection", "tag"], many);
+    expect(ids(g, "collection")).toHaveLength(MAX_ATTRIBUTE_NODES);
+    expect(ids(g, "tag")).toHaveLength(MAX_ATTRIBUTE_NODES);
+    expect(ids(g, "tag")).toContain("tag:common"); // most used survives the cap
+  });
+
+  it("uses safe keys for odd names and unknown collections", () => {
+    const odd = { nodes: [node("a", { collectionId: "__proto__", tags: ["__proto__", "constructor"] }), node("b", { collectionId: "ghost", tags: ["__proto__", "constructor"] })], edges: [] };
+    const g = withAttributeNodes(odd, ["collection", "tag"], collections);
+    expect(ids(g)).toEqual(["collection:__proto__", "collection:ghost", "tag:__proto__", "tag:constructor"]);
+    expect(g.nodes.find((n) => n.id === "collection:__proto__")!.title).toBe("Unknown collection");
+  });
+
+  it("hides attributes whose members are all filtered out (filter first, then add)", () => {
+    const g = withAttributeNodes(filterGraph(base(), { type: "task" }), ["type", "collection", "tag"], collections);
+    expect(ids(g)).toEqual(["collection:c1", "type:task"]);
   });
 });

@@ -1,4 +1,5 @@
 import { LIMITS, listMemories, listRelations, projectOfMemory, type MemoryStatus, type Project, type WorkspaceState } from "../../domain";
+import { STATUS_META, typeLabel } from "../../components/memoryMeta";
 import { TITLE_PREFIX_LABEL, TITLE_PREFIX_PROCESS, normalizeTitle, parseTitlePrefix } from "../../domain/titlePrefix";
 
 /** Pure graph model helpers: no React, no layout. Edges are stored relations plus view-only title-prefix links. */
@@ -27,7 +28,16 @@ export interface GraphNode {
   projectName?: string | null;
   /** Synthetic project hub (id `project:<projectId>`, or `project:<key>` for a prefix-only key with no Project): no memory is titled like the project yet. Never a real memory id. */
   virtual?: boolean;
+  /** Optional extra node (see `withAttributeNodes`): a collection, type, tag or status shared by memories. Not a memory. */
+  attr?: AttributeKind;
 }
+
+export type AttributeKind = "collection" | "type" | "tag" | "status";
+export const ATTRIBUTE_KINDS: readonly AttributeKind[] = ["collection", "type", "tag", "status"];
+/** At most this many attribute nodes per kind (most-used first). */
+export const MAX_ATTRIBUTE_NODES = 60;
+/** A tag only becomes a node when this many memories use it. */
+export const MIN_TAG_MEMBERS = 2;
 
 /** Id prefix of virtual project hubs; real memory ids never use it. */
 export const PROJECT_NODE_PREFIX = "project:";
@@ -44,6 +54,8 @@ export interface GraphEdge {
   prefix?: boolean;
   /** View-only edge computed from titles; has no stored relation (never removable). */
   derived?: boolean;
+  /** Memory -> attribute node link (see `withAttributeNodes`): decoration only, never a relation. */
+  attribute?: boolean;
 }
 
 export interface Graph {
@@ -117,6 +129,78 @@ export function buildGraph(state: WorkspaceState, opts: { showArchived?: boolean
     ),
   ].sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
   return { nodes, edges };
+}
+
+/**
+ * Adds optional attribute nodes (collection / type / tag / status) and light edges memory -> attribute for the given
+ * kinds. Memories only (never project hubs). Existing nodes and edges are untouched, and with no kinds the same graph
+ * is returned. Tags need MIN_TAG_MEMBERS memories; every kind keeps its MAX_ATTRIBUTE_NODES most-used attributes.
+ * Pass the already filtered graph: attributes whose members are all filtered out then never appear.
+ */
+export function withAttributeNodes(graph: Graph, kinds: Iterable<AttributeKind>, collections: Record<string, { name: string }>): Graph {
+  const wanted = new Set(kinds);
+  if (wanted.size === 0) return graph;
+  const nodes: GraphNode[] = [];
+  const edges: GraphEdge[] = [];
+  const attributesOf = (m: GraphNode): { kind: AttributeKind; key: string; label: string }[] => {
+    const out: { kind: AttributeKind; key: string; label: string }[] = [];
+    if (wanted.has("collection") && m.collectionId !== null) {
+      out.push({ kind: "collection", key: m.collectionId, label: Object.hasOwn(collections, m.collectionId) ? collections[m.collectionId].name : "Unknown collection" });
+    }
+    if (wanted.has("type")) out.push({ kind: "type", key: m.type, label: typeLabel(m.type) });
+    if (wanted.has("status")) {
+      const status: MemoryStatus = m.archived ? "archived" : m.status;
+      out.push({ kind: "status", key: status, label: STATUS_META[status].label });
+    }
+    if (wanted.has("tag")) {
+      const seen = new Set<string>();
+      for (const t of m.tags) {
+        const key = t.trim().toLowerCase();
+        if (key === "" || seen.has(key)) continue;
+        seen.add(key);
+        out.push({ kind: "tag", key, label: `#${key}` });
+      }
+    }
+    return out;
+  };
+  const groups = new Map<string, { kind: AttributeKind; key: string; label: string; members: string[] }>();
+  for (const m of graph.nodes) {
+    if (m.virtual || m.attr) continue;
+    for (const a of attributesOf(m)) {
+      const id = `${a.kind}:${a.key}`;
+      const g = groups.get(id);
+      if (g) g.members.push(m.id);
+      else groups.set(id, { ...a, members: [m.id] });
+    }
+  }
+  for (const kind of ATTRIBUTE_KINDS) {
+    if (!wanted.has(kind)) continue;
+    const chosen = [...groups.entries()]
+      .filter(([, g]) => g.kind === kind && (kind !== "tag" || g.members.length >= MIN_TAG_MEMBERS))
+      .sort((a, b) => b[1].members.length - a[1].members.length || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+      .slice(0, MAX_ATTRIBUTE_NODES)
+      .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+    for (const [id, g] of chosen) {
+      nodes.push({
+        id,
+        title: g.label,
+        type: kind,
+        status: "saved",
+        archived: false,
+        collectionId: null,
+        tags: [],
+        degree: g.members.length,
+        childCount: 0,
+        isProject: false,
+        project: null,
+        attr: kind,
+      });
+      for (const memberId of g.members) {
+        edges.push({ id: `attr:${id}:${memberId}`, source: memberId, target: id, label: kind, origin: "process", demo: false, attribute: true });
+      }
+    }
+  }
+  return { nodes: [...graph.nodes, ...nodes], edges: [...graph.edges, ...edges] };
 }
 
 const byId = <T extends { id: string }>(a: T, b: T): number => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0);

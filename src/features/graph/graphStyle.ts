@@ -1,4 +1,4 @@
-import type { GraphNode } from "./graphModel";
+import type { AttributeKind, GraphNode } from "./graphModel";
 
 /** Chromatic lojee-ui accent palettes only (`data-accent="<name>"`); the neutral ones (gray, slate, ...) would read as "no project".
  * `amber` is left out on purpose: AMBER is the pending/highlight ring colour. */
@@ -68,7 +68,21 @@ export const ROSE = "var(--color-rose-500, #f43f5e)";
 export const ACCENT = "var(--color-accent-500, #64748b)";
 
 /** Node radius grows with degree (capped); project hubs are bigger and grow with their child count (capped). */
-export function nodeRadius(node: Pick<GraphNode, "degree"> & Partial<Pick<GraphNode, "childCount" | "isProject">>): number {
+export function nodeRadius(node: Pick<GraphNode, "degree"> & Partial<Pick<GraphNode, "childCount" | "isProject" | "attr">>): number {
+  if (node.attr) return 8;
   if (node.isProject) return Math.min(40, 14 + Math.sqrt(node.childCount ?? 0) * 4);
   return 7 + Math.min(10, node.degree * 1.5);
+}
+
+/** Polygon points (centred on 0,0) for an attribute node shape: square, diamond, hexagon, triangle. */
+export function attributeShape(kind: AttributeKind, r: number): string {
+  const pts: [number, number][] =
+    kind === "collection"
+      ? [[-1, -1], [1, -1], [1, 1], [-1, 1]]
+      : kind === "type"
+        ? [[0, -1.3], [1.3, 0], [0, 1.3], [-1.3, 0]]
+        : kind === "tag"
+          ? [[1, 0], [0.5, 0.87], [-0.5, 0.87], [-1, 0], [-0.5, -0.87], [0.5, -0.87]]
+          : [[0, -1.2], [1.1, 0.9], [-1.1, 0.9]];
+  return pts.map(([x, y]) => `${(x * r).toFixed(1)},${(y * r).toFixed(1)}`).join(" ");
 }

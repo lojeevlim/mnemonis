@@ -505,3 +505,46 @@ describe("Graph: colours per project", () => {
     expect(before.every(Boolean)).toBe(true);
   });
 });
+
+describe("Graph: attribute nodes", () => {
+  const attrEls = (c: HTMLElement, kind?: string) => [...c.querySelectorAll<SVGGElement>(kind ? `[data-attribute="${kind}"]` : "[data-attribute]")];
+
+  it("shows nothing extra by default and adds nodes per toggled kind", () => {
+    const { container } = renderPage();
+    expect(attrEls(container)).toHaveLength(0);
+    expect(container.querySelectorAll("[data-attr-edge]")).toHaveLength(0);
+    fireEvent.click(screen.getByLabelText("Collections"));
+    const collections = attrEls(container, "collection");
+    expect(collections.length).toBeGreaterThan(0);
+    expect(container.querySelectorAll("[data-attr-edge]").length).toBeGreaterThan(0);
+    fireEvent.click(screen.getByLabelText("Types"));
+    fireEvent.click(screen.getByLabelText("Statuses"));
+    fireEvent.click(screen.getByLabelText("Tags"));
+    for (const k of ["type", "status", "tag"]) expect(attrEls(container, k).length).toBeGreaterThan(0);
+    // Memory counts and the real memory nodes are unchanged.
+    expect(screen.getByText(/18 memories · 29 relations/)).toBeInTheDocument();
+    expect(nodeEls(container).filter((n) => !n.hasAttribute("data-attribute"))).toHaveLength(18);
+    expect(container.querySelector("[data-legend-attribute=tag]")).toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("Tags"));
+    expect(attrEls(container, "tag")).toHaveLength(0);
+    expect(container.querySelector("[data-legend-attribute=tag]")).not.toBeInTheDocument();
+  });
+
+  it("highlights the members of a clicked attribute node and lists them without opening a memory", () => {
+    const { container } = renderPage();
+    fireEvent.click(screen.getByLabelText("Types"));
+    const task = nodeEl(container, "type:task");
+    fireEvent.click(task);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    const panel = screen.getByTestId("selected-attribute");
+    expect(within(panel).getAllByRole("button")).toHaveLength(2);
+    expect(nodeEls(container).filter((n) => n.getAttribute("data-dimmed") === "true").length).toBeGreaterThan(0);
+    expect(nodeEl(container, "mem_task_mcp").hasAttribute("data-dimmed")).toBe(false);
+  });
+
+  it("hides attribute nodes whose members are filtered out", () => {
+    const { container } = renderPage("/graph?type=task");
+    fireEvent.click(screen.getByLabelText("Types"));
+    expect(attrEls(container, "type").map((n) => n.getAttribute("data-node-id"))).toEqual(["type:task"]);
+  });
+});

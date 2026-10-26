@@ -20,6 +20,8 @@ import {
   isolatedNodes,
   isVirtualNodeId,
   searchNodes,
+  withAttributeNodes,
+  type AttributeKind,
   type Graph,
   type GraphFilters,
   type GraphNode,
@@ -38,6 +40,16 @@ function hubSelection(graph: Graph, hub: GraphNode): { hub: GraphNode; members: 
     .filter((n): n is GraphNode => !!n)
     .sort((a, b) => a.title.localeCompare(b.title) || (a.id < b.id ? -1 : 1));
   return { hub, members };
+}
+
+function attributeSelection(graph: Graph, node: GraphNode): { node: GraphNode; members: GraphNode[] } {
+  const byId = new Map(graph.nodes.map((n) => [n.id, n]));
+  const members = graph.edges
+    .filter((e) => e.attribute && e.target === node.id)
+    .map((e) => byId.get(e.source))
+    .filter((n): n is GraphNode => !!n)
+    .sort((a, b) => a.title.localeCompare(b.title) || (a.id < b.id ? -1 : 1));
+  return { node, members };
 }
 
 export function GraphPage() {
@@ -60,6 +72,8 @@ export function GraphPage() {
   const [linkSource, setLinkSource] = useState<string | null>(null);
   const [linkTarget, setLinkTarget] = useState<string | null>(null);
   const [linkNotice, setLinkNotice] = useState<string | null>(null);
+  const [attributeKinds, setAttributeKinds] = useState<ReadonlySet<AttributeKind>>(() => new Set());
+  const [attributeId, setAttributeId] = useState<string | null>(null);
   const [creatingHub, setCreatingHub] = useState(false);
   const [hubNotice, setHubNotice] = useState<string | null>(null);
   const creatingHubRef = useRef(false);
@@ -90,6 +104,12 @@ export function GraphPage() {
     () => (base ? filterGraph(base, { type, collectionId, status, tag }) : null),
     [base, type, collectionId, status, tag],
   );
+  // Attribute nodes are added on the filtered graph, so one whose members are all filtered out never shows. Counts, clusters and
+  // search keep using `graph` (memories only).
+  const shown = useMemo(
+    () => (graph && state ? withAttributeNodes(graph, attributeKinds, state.collections) : null),
+    [graph, state, attributeKinds],
+  );
   // Colours come from every project, archived memories included, so neither filters nor the archived toggle recolour anything.
   const projectAccents = useMemo(() => {
     if (!state || !base) return assignProjectAccents([]);
@@ -117,7 +137,7 @@ export function GraphPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [staleHubId]);
 
-  if (!state || !base || !graph) return null;
+  if (!state || !base || !graph || !shown) return null;
 
   const collections = Object.values(state.collections);
   const withCurrent = (values: string[], current: string) =>
@@ -129,8 +149,12 @@ export function GraphPage() {
   const activeCluster = activeClusterIndex >= 0 ? clusterList[activeClusterIndex] : null;
   const edge = selectedEdgeId ? graph.edges.find((e) => e.id === selectedEdgeId) : undefined;
 
+  const attributeNode = attributeId ? shown.nodes.find((n) => n.id === attributeId && n.attr) : undefined;
+  const selectedAttribute = attributeNode ? attributeSelection(shown, attributeNode) : null;
+
   let emphasis: Set<string> | null = null;
   if (query.trim()) emphasis = new Set(matches);
+  else if (selectedAttribute) emphasis = new Set([selectedAttribute.node.id, ...selectedAttribute.members.map((m) => m.id)]);
   else if (activeCluster) emphasis = new Set(activeCluster);
   else if (highlightIsolated) emphasis = new Set(isolated.map((n) => n.id));
   const highlightIds = highlightIsolated ? new Set(isolated.map((n) => n.id)) : null;
@@ -161,6 +185,19 @@ export function GraphPage() {
   };
 
   const selectNode = (id: string) => {
+    const attr = shown.nodes.find((n) => n.id === id && n.attr);
+    if (attr) {
+      if (linkMode) {
+        setLinkNotice(`"${attr.title}" is a ${attr.attr}, not a memory, so it cannot be linked.`);
+        return;
+      }
+      setSelectedEdgeId(null);
+      setHubNotice(null);
+      setAttributeId(id);
+      setParam("memory", null);
+      return;
+    }
+    setAttributeId(null);
     if (linkMode) {
       if (isVirtualNodeId(id)) {
         const hub = base.nodes.find((n) => n.id === id);
@@ -179,11 +216,13 @@ export function GraphPage() {
   };
   const selectEdge = (id: string) => {
     if (linkMode) return;
+    setAttributeId(null);
     setParam("memory", null);
     setSelectedEdgeId(id);
   };
   const clearSelection = () => {
     setSelectedEdgeId(null);
+    setAttributeId(null);
     if (!linkMode) setParam("memory", null);
   };
 
@@ -378,10 +417,10 @@ export function GraphPage() {
                 </EmptyState>
               ) : (
                 <GraphCanvas
-                  nodes={graph.nodes}
-                  edges={graph.edges}
+                  nodes={shown.nodes}
+                  edges={shown.edges}
                   projectAccents={projectAccents}
-                  selectedNodeId={openId}
+                  selectedNodeId={attributeNode ? attributeNode.id : openId}
                   selectedEdgeId={edge?.id ?? null}
                   emphasisIds={emphasis}
                   highlightIds={highlightIds}
@@ -401,6 +440,17 @@ export function GraphPage() {
               activeClusterIndex={activeClusterIndex >= 0 ? activeClusterIndex : null}
               isolated={isolated}
               selectedHub={selectedHub}
+              attributeKinds={attributeKinds}
+              onToggleKind={(kind, on) => {
+                setAttributeKinds((prev) => {
+                  const next = new Set(prev);
+                  if (on) next.add(kind);
+                  else next.delete(kind);
+                  return next;
+                });
+                if (!on) setAttributeId(null);
+              }}
+              selectedAttribute={selectedAttribute}
               creatingHub={creatingHub}
               hubNotice={hubNotice}
               onCreateHub={(hub) => void createHub(hub)}

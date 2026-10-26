@@ -212,13 +212,11 @@ function nearestSaved(draft: Rec, all: Rec, savedIds: Set<string>): string | nul
 }
 
 /**
- * v2 -> v3, pure and deterministic. The input is UNTRUSTED and the output is validated strictly:
- *  1. every snapshot gets `projectId: null` as a normalisation default (no new revisions, history otherwise intact);
- *  2. `projects` is added and filled from the title prefixes (see deriveProjectsFromPrefixes), linking the
- *     same-named collections. Nothing else changes: no collection is created, ids / relations / pending
- *     proposals stay as they are.
+ * v2 -> v3 (raw, not yet validated), pure and deterministic. The input is UNTRUSTED. Every snapshot gets
+ * `projectId: null` as a normalisation default (no new revisions, history otherwise intact) and `projects` is
+ * added as an empty map when absent.
  */
-function migrateV2(raw: Rec): ValidationResult {
+function upgradeV2ToV3(raw: Rec): Rec {
   const revisions = isPlainObject(raw.revisions)
     ? Object.fromEntries(
         Object.entries(raw.revisions).map(([k, r]) => [
@@ -229,19 +227,51 @@ function migrateV2(raw: Rec): ValidationResult {
         ]),
       )
     : raw.revisions;
-  const checked = validateWorkspaceState({ ...raw, schemaVersion: SCHEMA_VERSION, revisions, projects: raw.projects ?? {} });
+  return { ...raw, schemaVersion: 3, revisions, projects: raw.projects ?? {} };
+}
+
+/**
+ * v3 -> v4 (raw, not yet validated), pure, lossless and idempotent: adds `organizations: {}` (kept when already
+ * present) and `organizationId: null` on every project that has none. Nothing else is touched.
+ */
+function upgradeV3ToV4(raw: Rec): Rec {
+  const projects = isPlainObject(raw.projects)
+    ? Object.fromEntries(
+        Object.entries(raw.projects).map(([k, p]) => [k, isPlainObject(p) && !Object.hasOwn(p, "organizationId") ? { ...p, organizationId: null } : p]),
+      )
+    : raw.projects;
+  return { ...raw, schemaVersion: 4, projects, organizations: raw.organizations ?? {} };
+}
+
+/**
+ * v2 -> v4, validated strictly. The output of upgradeV2ToV3 / upgradeV3ToV4 is untrusted and validated:
+ *  1. every snapshot gets `projectId: null` as a normalisation default (no new revisions, history otherwise intact);
+ *  2. `projects` is added and filled from the title prefixes (see deriveProjectsFromPrefixes), linking the
+ *     same-named collections. Nothing else changes: no collection is created, ids / relations / pending
+ *     proposals stay as they are.
+ */
+function migrateV2(raw: Rec): ValidationResult {
+  const checked = validateWorkspaceState(upgradeV3ToV4(upgradeV2ToV3(raw)));
   if (!checked.ok) return checked;
   return validateWorkspaceState(deriveProjectsFromPrefixes(checked.state));
 }
 
 /**
- * Accepts persisted / imported workspace data of any known schema and returns a STRICTLY validated v3 state.
- * v3 is validated as is; v2 is upgraded (see migrateV2); v1 is migrated to v2 (see migrateV1) and then upgraded.
+ * Accepts persisted / imported workspace data of any known schema and returns a STRICTLY validated v4 state.
+ * v4 is validated as is; v3 is upgraded (see upgradeV3ToV4); v2 is upgraded (see migrateV2); v1 is migrated to v2
+ * (see migrateV1) and then upgraded.
  * Anything else is `version-mismatch` / `corrupt`. Never throws. Idempotent: migrating a result changes nothing.
  */
 export function migrateWorkspaceState(raw: unknown): ValidationResult {
   if (!isPlainObject(raw)) return CORRUPT;
   if (raw.schemaVersion === SCHEMA_VERSION) return validateWorkspaceState(raw);
+  if (raw.schemaVersion === 3) {
+    try {
+      return validateWorkspaceState(upgradeV3ToV4(raw));
+    } catch {
+      return CORRUPT;
+    }
+  }
   if (raw.schemaVersion === 2) {
     try {
       return migrateV2(raw);

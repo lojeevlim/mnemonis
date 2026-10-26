@@ -22,6 +22,10 @@ export const LIMITS = {
   maxProjects: 200,
   /** Unconfirmed (agent-created) projects allowed at once. */
   maxAutoProjects: 25,
+  organizationName: 100,
+  maxOrganizations: 50,
+  /** Unconfirmed (agent-created) organizations allowed at once. */
+  maxAutoOrganizations: 10,
   maxProjectAliases: 10,
   maxProjectSources: 10,
   repoUrl: 200,

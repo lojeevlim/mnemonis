@@ -36,7 +36,10 @@ import type { LoadIssue, MemoryRepository, RepositoryStatus } from "./repository
 
 export const STORAGE_KEY = `mnemonis.workspace.v${SCHEMA_VERSION}`;
 export const CORRUPT_BACKUP_KEY = `${STORAGE_KEY}.corrupt`;
-/** Previous (v2, no projects) storage key. Read once for migration; NEVER deleted or rewritten by the app on load. */
+/** Previous (v3, no organizations) storage key. Read once for migration; NEVER deleted or rewritten by the app on load. */
+export const LEGACY_V3_STORAGE_KEY = "mnemonis.workspace.v3";
+export const LEGACY_V3_CORRUPT_BACKUP_KEY = `${LEGACY_V3_STORAGE_KEY}.corrupt`;
+/** Older (v2, no projects) storage key. Read once for migration; NEVER deleted or rewritten by the app on load. */
 export const LEGACY_V2_STORAGE_KEY = "mnemonis.workspace.v2";
 export const LEGACY_V2_CORRUPT_BACKUP_KEY = `${LEGACY_V2_STORAGE_KEY}.corrupt`;
 /** Pre-refactor (branches / commits) storage key. Read once for migration; NEVER deleted by the app on load. */
@@ -230,7 +233,7 @@ export class LocalRepository implements MemoryRepository {
   }
 
   /**
-   * Look for an older envelope (v2 key, then the v1 key), migrate it and persist it under the current key.
+   * Look for an older envelope (v3 key, then the v2 key, then the v1 key), migrate it and persist it under the current key.
    * The old keys are left untouched (the user's only copy of their old data, and a rollback path).
    * `fallbackIssue` is reported when nothing usable is found ("missing" when the current key was absent, else
    * why it was unreadable).
@@ -241,6 +244,7 @@ export class LocalRepository implements MemoryRepository {
   ): { state: WorkspaceState | null; issue: LoadIssue | null } {
     let firstIssue: LoadIssue | null = null;
     const sources: [string, number, string][] = [
+      [LEGACY_V3_STORAGE_KEY, 3, LEGACY_V3_CORRUPT_BACKUP_KEY],
       [LEGACY_V2_STORAGE_KEY, 2, LEGACY_V2_CORRUPT_BACKUP_KEY],
       [LEGACY_STORAGE_KEY, 1, LEGACY_CORRUPT_BACKUP_KEY],
     ];

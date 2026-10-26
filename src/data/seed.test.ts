@@ -22,7 +22,7 @@ describe("seed workspace", () => {
     expect(createSeedWorkspace()).toEqual(s);
     expect(JSON.parse(JSON.stringify(s))).toEqual(s);
     expect(validateWorkspaceState(s).ok).toBe(true);
-    expect(s.schemaVersion).toBe(3);
+    expect(s.schemaVersion).toBe(4);
   });
 
   it("has ~15-20 saved memories covering every built-in type", () => {

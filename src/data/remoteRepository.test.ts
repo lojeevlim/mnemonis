@@ -37,7 +37,7 @@ describe("RemoteRepository reads", () => {
 
   it("export() returns the server's export text", async () => {
     const { repo } = setup();
-    expect(JSON.parse(await repo.export())).toMatchObject({ schemaVersion: 3 });
+    expect(JSON.parse(await repo.export())).toMatchObject({ schemaVersion: 4 });
   });
 
   it("save() is a no-op that makes no request", async () => {

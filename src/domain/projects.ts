@@ -1,6 +1,7 @@
 import { DomainError, type DomainContext } from "./context";
 import { assertNotBothCollectionFields, resolveCollection } from "./collectionDefault";
 import { assertActor, LIMITS } from "./limits";
+import { confirmOrganizationById, pruneEmptyAutoOrganizations } from "./organizations";
 import { listMemories } from "./queries";
 import { assertCollectionRoom, createCollection } from "./relations";
 import { normalizeTitle, parseTitlePrefix } from "./titlePrefix";
@@ -306,6 +307,7 @@ function insertProject(state: WorkspaceState, ctx: DomainContext, c: CheckedInpu
     createdBy: actor.name,
     autoCreated: isAgent,
     confirmed: !isAgent,
+    organizationId: null,
   };
   assertSafeId(project.id, "project");
   const withCollection = attachDefaultCollection(state, ctx, project, actor);
@@ -395,7 +397,9 @@ function confirmAndAdopt(state: WorkspaceState, p: Project): { state: WorkspaceS
     const adoptable = adoptableCollection(state, p.key);
     if (adoptable) ({ state: next, project } = linkCollection(state, adoptable, project));
   }
-  return { state: { ...next, projects: { ...next.projects, [p.id]: project } }, project };
+  // Confirming a project also acknowledges its (agent-created) organization.
+  const withOrg = { ...next, projects: { ...next.projects, [p.id]: project } };
+  return { state: confirmOrganizationById(withOrg, project.organizationId), project };
 }
 
 /**
@@ -416,7 +420,8 @@ export function renameProject(state: WorkspaceState, args: { id: string; name: s
   if (key !== p.key && !aliases.includes(p.key)) aliases.push(p.key);
   if (aliases.length > LIMITS.maxProjectAliases) throw tooLarge(`Too many project aliases (max ${LIMITS.maxProjectAliases})`);
   const next: Project = { ...p, name, key, aliases, confirmed: true };
-  return { state: { ...state, projects: { ...state.projects, [p.id]: next } }, value: next };
+  const renamed = { ...state, projects: { ...state.projects, [p.id]: next } };
+  return { state: confirmOrganizationById(renamed, next.organizationId), value: next };
 }
 
 /** Confirms `projectId` (if it exists and is unconfirmed); returns the same state otherwise. Used when a user saves / approves. */
@@ -456,6 +461,11 @@ const unlinkAll = (collections: WorkspaceState["collections"], projectId: string
  * cannot leave junk behind to exhaust LIMITS.maxProjects / maxCollections. Confirmed projects are never touched.
  */
 export function pruneEmptyAutoProjects(state: WorkspaceState, candidateIds: Iterable<string | null | undefined>): WorkspaceState {
+  // Same transition: an unconfirmed agent-created organization that no project references any more goes too.
+  return pruneEmptyAutoOrganizations(pruneProjects(state, candidateIds));
+}
+
+function pruneProjects(state: WorkspaceState, candidateIds: Iterable<string | null | undefined>): WorkspaceState {
   const ids = [...new Set(candidateIds)].filter((id): id is string => typeof id === "string");
   const doomed = ids.map((id) => getProject(state, id)).filter((p): p is Project => !!p && p.autoCreated && !p.confirmed);
   if (doomed.length === 0) return state;
@@ -489,7 +499,8 @@ export function deleteProject(state: WorkspaceState, args: { id: string; actor: 
   if (referencedIds(state).projects.has(p.id)) throw new DomainError("project_in_use", "Project still has memories");
   const projects = { ...state.projects };
   delete projects[p.id];
-  return { state: { ...state, projects, collections: unlinkAll(state.collections, p.id) }, value: undefined };
+  const next = { ...state, projects, collections: unlinkAll(state.collections, p.id) };
+  return { state: pruneEmptyAutoOrganizations(next), value: undefined };
 }
 
 // ---- resolution --------------------------------------------------------------------------------------------------
@@ -772,6 +783,7 @@ export function deriveProjectsFromPrefixes(state: WorkspaceState): WorkspaceStat
       createdBy: "migration",
       autoCreated: false,
       confirmed: true,
+      organizationId: null,
     };
   }
   return { ...state, projects, collections };

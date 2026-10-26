@@ -168,17 +168,38 @@ export interface Project {
   autoCreated: boolean;
   /** False while an agent-created project has not been approved / acknowledged by a user. */
   confirmed: boolean;
+  /**
+   * The organization this project belongs to (null = none). A project attribute: NOT part of MemorySnapshot /
+   * revisions. A dangling id is repaired to null on load.
+   */
+  organizationId: string | null;
+}
+
+/** A level above Project: an organization contains projects (a project belongs to at most one). */
+export interface Organization {
+  /** "org_<16 hex of sha256(key)>" for migrated / derived organizations, a fresh safe id for new ones. */
+  id: string;
+  /** normalizeTitle(name); unique among organizations. */
+  key: string;
+  name: string;
+  createdAt: string;
+  createdBy: string;
+  /** Created by an agent (not a user). */
+  autoCreated: boolean;
+  /** False while an agent-created organization has not been acknowledged by a user. */
+  confirmed: boolean;
 }
 
 export type ChangeKind = "create" | "update" | "archive" | "restore";
 
 export interface WorkspaceState {
-  schemaVersion: 3;
+  schemaVersion: 4;
   memories: Record<string, MemoryIdentity>;
   revisions: Record<string, Revision>;
   relations: Record<string, Relation>;
   collections: Record<string, Collection>;
   projects: Record<string, Project>;
+  organizations: Record<string, Organization>;
 }
 
 /** Every mutation returns the next state plus a value. */

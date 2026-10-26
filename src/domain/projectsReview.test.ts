@@ -72,7 +72,8 @@ describe("hostile long titles (F1)", () => {
 
     it(`normalizeTitle / parseTitlePrefix / autoRelate / topic scans are linear on it (${name})`, () => {
       const raw = withTitle(title);
-      raw.schemaVersion = 3;
+      raw.schemaVersion = 4;
+      raw.organizations = {};
       for (const rev of Object.values<any>(raw.revisions)) rev.snapshot.projectId = null;
       raw.projects = {};
       const v = validateWorkspaceState(raw);

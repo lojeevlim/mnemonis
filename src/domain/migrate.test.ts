@@ -18,7 +18,7 @@ function migrate(raw: unknown): WorkspaceState {
 
 /** Everything v1 held must still be there. */
 function expectPreserved(raw: any, s: WorkspaceState) {
-  expect(s.schemaVersion).toBe(3);
+  expect(s.schemaVersion).toBe(4);
   expect(s.memories).toEqual(raw.memories);
   // every v1 relation becomes a saved v2 relation (nothing else changes)
   expect(s.relations).toEqual(

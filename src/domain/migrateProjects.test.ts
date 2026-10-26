@@ -25,7 +25,7 @@ describe("v2 -> v3 migration", () => {
   const byKey = (k: string) => Object.values(s.projects).find((p) => p.key === k);
 
   it("keeps every id and record: memories, revisions, relations, collections", () => {
-    expect(s.schemaVersion).toBe(3);
+    expect(s.schemaVersion).toBe(4);
     expect(s.memories).toEqual(raw.memories);
     expect(s.relations).toEqual(raw.relations);
     expect(Object.keys(s.revisions)).toEqual(Object.keys(raw.revisions));
@@ -93,7 +93,7 @@ describe("v2 -> v3 migration", () => {
   it("v1 chains through v2 to v3 and stays idempotent", () => {
     for (const v1 of [v1Seed, v1Drafts]) {
       const m = migrate(clone(v1));
-      expect(m.schemaVersion).toBe(3);
+      expect(m.schemaVersion).toBe(4);
       expect(Object.keys(m.projects).every((k) => m.projects[k].id === k)).toBe(true);
       for (const r of Object.values(m.revisions)) expect(r.snapshot.projectId).toBeNull();
       expect(migrate(clone(m))).toEqual(m);

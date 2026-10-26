@@ -221,7 +221,7 @@ describe("project data is repaired on load, not rejected", () => {
   const withProjects = (): any => {
     const raw: any = JSON.parse(JSON.stringify(bulkState(2)));
     const proj = (id: string, name: string, createdAt: string, extra: any = {}) => ({
-      id, key: name.toLowerCase(), name, aliases: [], sources: [], collectionId: null, createdAt, createdBy: "u", autoCreated: false, confirmed: true, ...extra,
+      id, key: name.toLowerCase(), name, aliases: [], sources: [], collectionId: null, createdAt, createdBy: "u", autoCreated: false, confirmed: true, organizationId: null, ...extra,
     });
     const col = (id: string, projectId: string | null, createdAt = "2026-01-01T00:00:00.000Z") => ({ id, name: id, description: "", createdAt, projectId });
     return { raw, proj, col };
@@ -356,11 +356,12 @@ describe("project data is repaired on load, not rejected", () => {
     }
   });
 
-  it("a v2 workspace with broken project data migrates (repaired), a v3 one loads", () => {
+  it("a v2 workspace with broken project data migrates (repaired), a v3 or v4 one loads", () => {
     const { raw, proj } = withProjects();
     raw.projects = { p1: proj("p1", "One", "2026-01-01T00:00:00.000Z", { collectionId: "c_gone" }) };
     raw.collections = {};
-    expect(migrateWorkspaceState({ ...raw, schemaVersion: 3 }).ok).toBe(true);
+    expect(migrateWorkspaceState({ ...raw, schemaVersion: 4 }).ok).toBe(true);
+    expect(migrateWorkspaceState(JSON.parse(JSON.stringify({ ...raw, schemaVersion: 3, organizations: undefined, projects: Object.fromEntries(Object.entries(raw.projects).map(([k, p]: [string, any]) => [k, { ...p, organizationId: undefined }])) }))).ok).toBe(true);
     const v2raw = JSON.parse(JSON.stringify({ ...raw, schemaVersion: 2 }));
     for (const r of Object.values<any>(v2raw.revisions)) delete r.snapshot.projectId;
     const m = migrateWorkspaceState(v2raw);

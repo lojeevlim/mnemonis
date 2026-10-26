@@ -13,6 +13,7 @@ import type {
 } from "./types";
 import { assertActor, assertIdentityLimits, assertWithinLimits } from "./limits";
 import { assertNotBothCollectionFields } from "./collectionDefault";
+import { applyOrganizationInput, assertOrganizationWithProject, checkOrganizationName } from "./organizations";
 import { assertNotBothProjectFields, confirmProjectIn, getProject, pruneEmptyAutoProjects, resolvePlacement, type ProjectInput } from "./projects";
 import { autoRelate } from "./titlePrefix";
 import { autoFileOwnMemories } from "./unsorted";
@@ -35,6 +36,11 @@ export interface CreateMemoryInput {
   projectId?: string | null;
   /** Reuse or create a project by name (and optional repo / workspace). Mutually exclusive with `projectId`. */
   project?: ProjectInput;
+  /**
+   * Organization (name) a NEW project belongs to. Only valid together with `project`; ignored for an existing
+   * confirmed project or one that already has an organization.
+   */
+  organization?: string;
   source?: string;
   provenance?: MemoryProvenance;
   metadata?: Metadata;
@@ -46,6 +52,8 @@ export type MemoryPatch = Partial<
 > & {
   /** Reuse or create a project by name (and optional repo / workspace); mutually exclusive with `projectId`. Never re-defaulted on update. */
   project?: ProjectInput;
+  /** Organization (name) for the project named by `project` (see CreateMemoryInput.organization). Requires `project`. */
+  organization?: string;
   /** An existing collection id or name; ignored when `collectionId` is given. Never re-defaulted on update. */
   collection?: string;
 };
@@ -143,6 +151,8 @@ export function createMemory(
 ): Mutation<Memory> {
   assertActor(input.actor);
   const title = requireText(input.title, "title");
+  assertOrganizationWithProject(input.organization, input.project);
+  if (input.organization !== undefined) checkOrganizationName(input.organization);
   const po = input.provenance?.origin;
   const placed = resolvePlacement(state, ctx, {
     projectId: input.projectId,
@@ -153,7 +163,12 @@ export function createMemory(
     actor: input.actor,
     origin: po === "import" || po === "system" ? po : input.actor.kind,
   });
-  state = placed.state;
+  state = applyOrganizationInput(placed.state, ctx, {
+    organization: input.organization,
+    projectId: placed.projectId,
+    projectCreated: placed.projectCreated,
+    actor: input.actor,
+  });
   const collectionId = placed.collectionId ?? null;
   const projectId = placed.projectId ?? null;
   checkCollection(state, collectionId);
@@ -201,6 +216,10 @@ export function updateMemory(
   let { patch } = args;
   assertNotBothCollectionFields(patch.collectionId, patch.collection);
   assertNotBothProjectFields(patch.projectId, patch.project);
+  assertOrganizationWithProject(patch.organization, patch.project);
+  if (patch.organization !== undefined) checkOrganizationName(patch.organization);
+  const { organization, ...rest } = patch;
+  patch = rest;
   if (patch.collection !== undefined || patch.project !== undefined || patch.projectId !== undefined || patch.collectionId !== undefined) {
     // Only explicit input changes the project / folder; a named project brings the memory to its folder unless a
     // collection was named too.
@@ -213,7 +232,7 @@ export function updateMemory(
       actor: args.actor,
       applyDefault: false,
     });
-    state = r.state;
+    state = applyOrganizationInput(r.state, ctx, { organization, projectId: r.projectId, projectCreated: r.projectCreated, actor: args.actor });
     patch = { ...patch, collectionId: r.collectionId, projectId: r.projectId };
     delete patch.collection;
     delete patch.project;

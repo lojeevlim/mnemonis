@@ -83,12 +83,13 @@ describe("current saved revision is chain-based, not key-order based", () => {
     decidedAt: savedAt,
   });
   const state = (revs: any[]): any => ({
-    schemaVersion: 3,
+    schemaVersion: 4,
     memories: { m: { id: "m", createdAt: "t", source: "s", provenance: { origin: "user", createdBy: "a" } } },
     revisions: Object.fromEntries(revs.map((r) => [r.id, r])),
     relations: {},
     collections: {},
     projects: {},
+    organizations: {},
   });
 
   it("ids \"9\" then \"10\" (JS iterates 9, 10) interpret the chain correctly, whatever the key order", () => {

@@ -9,7 +9,7 @@ const store = () => useWorkspace.getState();
 const savedRelations = () => listRelations(store().state!);
 const renderPage = (path = "/graph") => renderAt(path, "/graph", <GraphPage />);
 /** Real memories only: virtual project hubs and their derived edges are asserted separately. */
-const nodeEls = (c: HTMLElement) => [...c.querySelectorAll<SVGGElement>("[data-node-id]:not([data-virtual])")];
+const nodeEls = (c: HTMLElement) => [...c.querySelectorAll<SVGGElement>("[data-node-id]:not([data-virtual]):not([data-attribute])")];
 const edgeEls = (c: HTMLElement) => [...c.querySelectorAll<SVGGElement>("[data-edge-id]:not([data-edge-id*=':project:'])")];
 const nodeEl = (c: HTMLElement, id: string) => c.querySelector<SVGGElement>(`[data-node-id="${id}"]`)!;
 
@@ -509,21 +509,14 @@ describe("Graph: colours per project", () => {
 describe("Graph: auto-fit", () => {
   const vp = (c: HTMLElement) => c.querySelector<SVGGElement>("[data-testid=graph-viewport]")!;
 
-  it("refits when a category is toggled, stops after a manual zoom and resumes on Fit to view", () => {
+  it("fits the view including the category nodes, stops after a manual zoom and resumes on Fit to view", () => {
     const { container } = renderPage();
     expect(vp(container)).toHaveAttribute("data-auto-fit", "true");
-    const before = vp(container).getAttribute("transform");
-    fireEvent.click(screen.getByLabelText("Collections"));
-    expect(vp(container)).toHaveAttribute("data-auto-fit", "true");
-    const withCategory = vp(container).getAttribute("transform");
-    expect(withCategory).not.toBe(before); // the bounding box grew, so the view refit
+    expect(container.querySelector("[data-attribute]")).toBeInTheDocument();
 
     fireEvent.keyDown(screen.getByRole("group", { name: /Knowledge graph canvas/ }), { key: "+" });
     expect(vp(container)).toHaveAttribute("data-auto-fit", "false");
     const manual = vp(container).getAttribute("transform");
-    fireEvent.click(screen.getByLabelText("Types")); // no refit while the user is in control
-    expect(vp(container)).toHaveAttribute("data-auto-fit", "false");
-    expect(vp(container).getAttribute("transform")).toBe(manual);
 
     fireEvent.click(screen.getByRole("button", { name: "Fit to view" }));
     expect(vp(container)).toHaveAttribute("data-auto-fit", "true");
@@ -541,18 +534,22 @@ describe("Graph: category hubs and value nodes", () => {
     [...c.querySelectorAll<SVGGElement>(`[data-attribute${kind ? `="${kind}"` : ""}]${role ? `[data-attribute-role="${role}"]` : ""}`)];
   const radius = (el: Element) => Number(el.querySelector("circle:not(.mn-focus)")!.getAttribute("r"));
 
-  it("offers an independent checkbox per available category, all unchecked, and draws nothing by default", () => {
+  it("has no \"Show as nodes\" config and draws every category by default", () => {
     const { container } = renderPage();
-    expect(attrEls(container)).toHaveLength(0);
-    expect(container.querySelectorAll("[data-attr-edge]")).toHaveLength(0);
-    const group = screen.getByRole("group", { name: "Show as nodes" });
-    for (const k of ["Collections", "Types", "Statuses", "Tags"]) expect(within(group).getByLabelText(k)).not.toBeChecked();
-    expect(within(group).queryByLabelText("None")).not.toBeInTheDocument();
+    expect(screen.queryByText("Show as nodes")).not.toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "Show as nodes" })).not.toBeInTheDocument();
+    for (const k of ["Collections", "Types", "Statuses", "Tags"]) expect(screen.queryByLabelText(k)).not.toBeInTheDocument();
+    expect(attrEls(container, undefined, "category").map((n) => n.getAttribute("data-node-id")).sort()).toEqual([
+      "category:collection",
+      "category:status",
+      "category:tag",
+      "category:type",
+    ]);
+    expect(container.querySelectorAll("[data-attr-edge]").length).toBeGreaterThan(0);
   });
 
   it("shows a big category hub (bigger than a project hub) with small value nodes (smaller than a memory) around it", () => {
     const { container } = renderPage();
-    fireEvent.click(screen.getByLabelText("Collections"));
     const hubs = attrEls(container, "collection", "category");
     const values = attrEls(container, "collection", "value");
     expect(hubs.map((h) => h.getAttribute("data-node-id"))).toEqual(["category:collection"]);
@@ -564,7 +561,7 @@ describe("Graph: category hubs and value nodes", () => {
     const smallestMemory = Math.min(...nodeEls(container).filter((n) => !n.hasAttribute("data-attribute")).map(radius));
     for (const v of values) expect(radius(v)).toBeLessThan(smallestMemory);
     // value -> category edges (solid) and memory -> value links (dotted).
-    expect(container.querySelectorAll("[data-attr-edge][data-category-edge]")).toHaveLength(values.length);
+    expect(container.querySelectorAll("[data-attr-edge^=\"cat:collection:\"][data-category-edge]")).toHaveLength(values.length);
     const memoryLinks = [...container.querySelectorAll("[data-attr-edge]:not([data-category-edge])")];
     expect(memoryLinks.length).toBeGreaterThan(0);
     expect(memoryLinks[0]).toHaveAttribute("stroke-dasharray");
@@ -572,27 +569,16 @@ describe("Graph: category hubs and value nodes", () => {
     expect(container.querySelector("[data-legend-attribute=collection]")).toBeInTheDocument();
   });
 
-  it("categories are independent, and unchecking removes them; memory counts never change", () => {
+  it("lists one legend entry per shown category; memory and relation counts are unchanged", () => {
     const { container } = renderPage();
-    fireEvent.click(screen.getByLabelText("Collections"));
-    fireEvent.click(screen.getByLabelText("Types"));
-    expect(attrEls(container, undefined, "category").map((n) => n.getAttribute("data-node-id")).sort()).toEqual(["category:collection", "category:type"]);
-    expect(container.querySelector("[data-legend-attribute=collection]")).toBeInTheDocument();
-    expect(container.querySelector("[data-legend-attribute=type]")).toBeInTheDocument();
+    for (const k of ["collection", "type", "status", "tag"]) expect(container.querySelector(`[data-legend-attribute=${k}]`)).toBeInTheDocument();
+    expect(container.querySelectorAll("[data-legend-attribute]")).toHaveLength(4);
     expect(screen.getByText(/18 memories · 29 relations/)).toBeInTheDocument();
     expect(nodeEls(container).filter((n) => !n.hasAttribute("data-attribute"))).toHaveLength(18);
-    fireEvent.click(screen.getByLabelText("Collections"));
-    expect(attrEls(container, "collection")).toHaveLength(0);
-    expect(attrEls(container, "type", "category")).toHaveLength(1);
-    fireEvent.click(screen.getByLabelText("Types"));
-    expect(attrEls(container)).toHaveLength(0);
-    expect(container.querySelector("[data-legend-attribute]")).not.toBeInTheDocument();
-    expect(container.querySelectorAll("[data-attr-edge]")).toHaveLength(0);
   });
 
   it("highlights the memories of a clicked value node and lists them without opening a memory", () => {
     const { container } = renderPage();
-    fireEvent.click(screen.getByLabelText("Types"));
     fireEvent.click(nodeEl(container, "type:task"));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     const panel = screen.getByTestId("selected-attribute");
@@ -604,7 +590,6 @@ describe("Graph: category hubs and value nodes", () => {
 
   it("highlights the value nodes of a clicked category hub", () => {
     const { container } = renderPage();
-    fireEvent.click(screen.getByLabelText("Types"));
     const valueIds = attrEls(container, "type", "value").map((n) => n.getAttribute("data-node-id")!);
     fireEvent.click(nodeEl(container, "category:type"));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
@@ -616,24 +601,23 @@ describe("Graph: category hubs and value nodes", () => {
 
   it("shows only the values whose memories pass the filters", () => {
     const { container } = renderPage("/graph?type=task");
-    fireEvent.click(screen.getByLabelText("Types"));
     expect(attrEls(container, "type", "value").map((n) => n.getAttribute("data-node-id"))).toEqual(["type:task"]);
     expect(attrEls(container, "type", "category")).toHaveLength(1);
   });
 
-  it("hides the Tags option when no memory has a tag", async () => {
+  it("has no Tags category (nor legend entry) when no memory has a tag", async () => {
     for (const m of listMemories(store().state!)) {
       if (m.tags.length > 0) await store().updateMemory(m.id, { tags: [] });
     }
-    renderPage();
-    const group = screen.getByRole("group", { name: "Show as nodes" });
-    expect(within(group).queryByLabelText("Tags")).not.toBeInTheDocument();
-    expect(within(group).getByLabelText("Types")).toBeInTheDocument();
+    const { container } = renderPage();
+    expect(attrEls(container, "tag")).toHaveLength(0);
+    expect(container.querySelector("[data-legend-attribute=tag]")).not.toBeInTheDocument();
+    expect(attrEls(container, "type", "category")).toHaveLength(1);
   });
 
-  it("hides the whole section when the filters leave no memory", () => {
-    renderPage("/graph?tag=no-such-tag");
-    expect(screen.queryByRole("group", { name: "Show as nodes" })).not.toBeInTheDocument();
-    expect(screen.queryByText("Show as nodes")).not.toBeInTheDocument();
+  it("draws no category when the filters leave no memory", () => {
+    const { container } = renderPage("/graph?tag=no-such-tag");
+    expect(attrEls(container)).toHaveLength(0);
+    expect(container.querySelector("[data-legend-attribute]")).not.toBeInTheDocument();
   });
 });

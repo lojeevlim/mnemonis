@@ -75,7 +75,6 @@ export function GraphPage() {
   const [linkSource, setLinkSource] = useState<string | null>(null);
   const [linkTarget, setLinkTarget] = useState<string | null>(null);
   const [linkNotice, setLinkNotice] = useState<string | null>(null);
-  const [chosenKinds, setChosenKinds] = useState<ReadonlySet<AttributeKind>>(() => new Set());
   const [attributeId, setAttributeId] = useState<string | null>(null);
   const [creatingHub, setCreatingHub] = useState(false);
   const [hubNotice, setHubNotice] = useState<string | null>(null);
@@ -107,11 +106,12 @@ export function GraphPage() {
     () => (base ? filterGraph(base, { type, collectionId, status, tag }) : null),
     [base, type, collectionId, status, tag],
   );
-  // Category hubs and value nodes are added on the filtered graph, so a value whose memories are all filtered out never shows, and a
-  // category with no value is not offered (a checked one that filters leave empty is simply not drawn). Counts, clusters and search
-  // keep using `graph`.
-  const availableKinds = useMemo(() => (graph && state ? availableAttributeKinds(graph, state.collections) : []), [graph, state]);
-  const attributeKinds = useMemo(() => new Set(availableKinds.filter((k) => chosenKinds.has(k))), [availableKinds, chosenKinds]);
+  // Category hubs and value nodes are always added, on the filtered graph, so a value whose memories are all filtered out never shows
+  // and a category with no value is not drawn. Counts, clusters and search keep using `graph`.
+  const attributeKinds = useMemo(
+    () => new Set<AttributeKind>(graph && state ? availableAttributeKinds(graph, state.collections) : []),
+    [graph, state],
+  );
   const shown = useMemo(
     () => (graph && state ? withAttributeNodes(graph, attributeKinds, state.collections) : null),
     [graph, state, attributeKinds],
@@ -446,17 +446,7 @@ export function GraphPage() {
               activeClusterIndex={activeClusterIndex >= 0 ? activeClusterIndex : null}
               isolated={isolated}
               selectedHub={selectedHub}
-              availableKinds={availableKinds}
               attributeKinds={attributeKinds}
-              onToggleKind={(kind, on) => {
-                setChosenKinds((prev) => {
-                  const next = new Set(prev);
-                  if (on) next.add(kind);
-                  else next.delete(kind);
-                  return next;
-                });
-                setAttributeId(null);
-              }}
               selectedAttribute={selectedAttribute}
               creatingHub={creatingHub}
               hubNotice={hubNotice}

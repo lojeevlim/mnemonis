@@ -1,7 +1,7 @@
 import { useMemo } from "react";
-import { Badge, Button, Checkbox } from "lojee-ui";
+import { Badge, Button } from "lojee-ui";
 import { parseTitlePrefix } from "../../domain/titlePrefix";
-import { ATTRIBUTE_KINDS, MAX_ATTRIBUTE_NODES, type AttributeKind, type GraphEdge, type GraphNode } from "./graphModel";
+import { ATTRIBUTE_KINDS, type AttributeKind, type GraphEdge, type GraphNode } from "./graphModel";
 import { AMBER, NEUTRAL, accentFill, ATTRIBUTE_DASH, type ProjectAccent } from "./graphStyle";
 
 /** Colour dot for a node's project (neutral when it has none). `data-accent` scopes the accent variable to the dot. */
@@ -48,11 +48,11 @@ function legendProjects(nodes: GraphNode[]): { key: string; name: string; count:
     .sort((a, b) => a.name.localeCompare(b.name) || (a.key < b.key ? -1 : 1));
 }
 
-const KIND_TOGGLE: Record<AttributeKind, { label: string; legend: string; hint: string }> = {
-  collection: { label: "Collections", legend: "Collections", hint: `Up to ${MAX_ATTRIBUTE_NODES} collections, most used first.` },
-  type: { label: "Types", legend: "Types", hint: `Up to ${MAX_ATTRIBUTE_NODES} types, most used first.` },
-  tag: { label: "Tags", legend: "Tags", hint: `Up to ${MAX_ATTRIBUTE_NODES} tags, most used first.` },
-  status: { label: "Statuses", legend: "Statuses", hint: "Saved, waiting for review or archived." },
+const KIND_LEGEND: Record<AttributeKind, string> = {
+  collection: "collections",
+  type: "types",
+  tag: "tags",
+  status: "statuses",
 };
 
 const NO_ACCENTS: ReadonlyMap<string, ProjectAccent> = new Map();
@@ -70,10 +70,8 @@ interface Props {
   creatingHub?: boolean;
   hubNotice?: string | null;
   onCreateHub?: (hub: GraphNode) => void;
-  /** Categories that have at least one value to show (others are not offered), the ones currently drawn, and the toggle for them. */
-  availableKinds?: readonly AttributeKind[];
+  /** Categories currently drawn (those with at least one value after the filters), for the legend. */
   attributeKinds?: ReadonlySet<AttributeKind>;
-  onToggleKind?: (kind: AttributeKind, on: boolean) => void;
   /** Selected attribute node and its members: memories of a value node, value nodes of a category hub. */
   selectedAttribute?: { node: GraphNode; members: GraphNode[] } | null;
   onFocusCluster: (index: number) => void;
@@ -92,9 +90,7 @@ export function GraphSidePanel({
   creatingHub = false,
   hubNotice = null,
   onCreateHub,
-  availableKinds = [],
   attributeKinds,
-  onToggleKind,
   selectedAttribute = null,
   onFocusCluster,
   onOpenMemory,
@@ -106,18 +102,6 @@ export function GraphSidePanel({
 
   return (
     <aside aria-label="Graph details" className="space-y-4 text-sm">
-      {onToggleKind && availableKinds.length > 0 && (
-        <Section title="Show as nodes">
-          <div className="flex flex-wrap gap-x-4 gap-y-1" role="group" aria-label="Show as nodes">
-            {availableKinds.map((k) => (
-              <span key={k} title={KIND_TOGGLE[k].hint}>
-                <Checkbox label={KIND_TOGGLE[k].label} checked={!!attributeKinds?.has(k)} onChange={(e) => onToggleKind(k, e.target.checked)} />
-              </span>
-            ))}
-          </div>
-        </Section>
-      )}
-
       {selectedHub && (
         <Section title="Selected project">
           <div className="space-y-2 rounded-lg border border-border bg-surface-muted p-2" data-testid="selected-hub">
@@ -311,7 +295,7 @@ export function GraphSidePanel({
                 <circle r="8" fill={NEUTRAL} fillOpacity="0.12" stroke={NEUTRAL} strokeWidth="1.5" strokeDasharray={ATTRIBUTE_DASH[k]} />
                 <circle r="2.5" fill={NEUTRAL} fillOpacity="0.55" stroke={NEUTRAL} strokeWidth="1" />
               </svg>
-              Big circle: {KIND_TOGGLE[k].legend.toLowerCase()}, one small dot per value (dotted line to its memories)
+              Big circle: {KIND_LEGEND[k]}, one small dot per value (dotted line to its memories)
             </li>
           ))}
           <li>Node size grows with the number of relations.</li>

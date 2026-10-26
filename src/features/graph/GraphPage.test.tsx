@@ -506,35 +506,46 @@ describe("Graph: colours per project", () => {
   });
 });
 
-describe("Graph: attribute nodes", () => {
+describe("Graph: attribute hubs", () => {
   const attrEls = (c: HTMLElement, kind?: string) => [...c.querySelectorAll<SVGGElement>(kind ? `[data-attribute="${kind}"]` : "[data-attribute]")];
+  const radius = (el: Element) => Number(el.querySelector("circle:not(.mn-focus)")!.getAttribute("r"));
 
-  it("shows nothing extra by default and adds nodes per toggled kind", () => {
+  it("offers only kinds that have a hub, plus None, and draws nothing by default", () => {
     const { container } = renderPage();
     expect(attrEls(container)).toHaveLength(0);
     expect(container.querySelectorAll("[data-attr-edge]")).toHaveLength(0);
+    const group = screen.getByRole("group", { name: "Show as nodes" });
+    expect(within(group).getByLabelText("None")).toBeChecked();
+    for (const k of ["Collections", "Types", "Statuses", "Tags"]) expect(within(group).getByLabelText(k)).toBeInTheDocument();
+  });
+
+  it("shows one kind of hub at a time, as circles bigger than a project hub, with members linked to it", () => {
+    const { container } = renderPage();
     fireEvent.click(screen.getByLabelText("Collections"));
     const collections = attrEls(container, "collection");
     expect(collections.length).toBeGreaterThan(0);
     expect(container.querySelectorAll("[data-attr-edge]").length).toBeGreaterThan(0);
+    expect(collections[0].querySelector("polygon")).toBeNull();
+    const projectHub = container.querySelector<SVGGElement>("[data-virtual][data-node-id^='project:']")!;
+    for (const c of collections) expect(radius(c)).toBeGreaterThan(radius(projectHub));
+    // Switching kind replaces the hubs instead of adding to them.
     fireEvent.click(screen.getByLabelText("Types"));
-    fireEvent.click(screen.getByLabelText("Statuses"));
-    fireEvent.click(screen.getByLabelText("Tags"));
-    for (const k of ["type", "status", "tag"]) expect(attrEls(container, k).length).toBeGreaterThan(0);
+    expect(attrEls(container, "collection")).toHaveLength(0);
+    expect(attrEls(container, "type").length).toBeGreaterThan(0);
+    expect(attrEls(container).every((n) => n.getAttribute("data-attribute") === "type")).toBe(true);
+    expect(container.querySelector("[data-legend-attribute=type]")).toBeInTheDocument();
     // Memory counts and the real memory nodes are unchanged.
     expect(screen.getByText(/18 memories · 29 relations/)).toBeInTheDocument();
     expect(nodeEls(container).filter((n) => !n.hasAttribute("data-attribute"))).toHaveLength(18);
-    expect(container.querySelector("[data-legend-attribute=tag]")).toBeInTheDocument();
-    fireEvent.click(screen.getByLabelText("Tags"));
-    expect(attrEls(container, "tag")).toHaveLength(0);
-    expect(container.querySelector("[data-legend-attribute=tag]")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("None"));
+    expect(attrEls(container)).toHaveLength(0);
+    expect(container.querySelector("[data-legend-attribute]")).not.toBeInTheDocument();
   });
 
-  it("highlights the members of a clicked attribute node and lists them without opening a memory", () => {
+  it("highlights the members of a clicked hub and lists them without opening a memory", () => {
     const { container } = renderPage();
     fireEvent.click(screen.getByLabelText("Types"));
-    const task = nodeEl(container, "type:task");
-    fireEvent.click(task);
+    fireEvent.click(nodeEl(container, "type:task"));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
     const panel = screen.getByTestId("selected-attribute");
     expect(within(panel).getAllByRole("button")).toHaveLength(2);
@@ -542,9 +553,25 @@ describe("Graph: attribute nodes", () => {
     expect(nodeEl(container, "mem_task_mcp").hasAttribute("data-dimmed")).toBe(false);
   });
 
-  it("hides attribute nodes whose members are filtered out", () => {
+  it("hides hubs whose members are filtered out", () => {
     const { container } = renderPage("/graph?type=task");
     fireEvent.click(screen.getByLabelText("Types"));
     expect(attrEls(container, "type").map((n) => n.getAttribute("data-node-id"))).toEqual(["type:task"]);
+  });
+
+  it("hides the Tags option when no memory has a tag", async () => {
+    for (const m of listMemories(store().state!)) {
+      if (m.tags.length > 0) await store().updateMemory(m.id, { tags: [] });
+    }
+    renderPage();
+    const group = screen.getByRole("group", { name: "Show as nodes" });
+    expect(within(group).queryByLabelText("Tags")).not.toBeInTheDocument();
+    expect(within(group).getByLabelText("Types")).toBeInTheDocument();
+  });
+
+  it("hides the whole section when the filters leave no memory", () => {
+    renderPage("/graph?tag=no-such-tag");
+    expect(screen.queryByRole("group", { name: "Show as nodes" })).not.toBeInTheDocument();
+    expect(screen.queryByText("Show as nodes")).not.toBeInTheDocument();
   });
 });

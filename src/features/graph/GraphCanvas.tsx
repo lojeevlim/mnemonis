@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties, type Keyboard
 import { Button } from "lojee-ui";
 import { STATUS_META, typeLabel } from "../../components/memoryMeta";
 import type { GraphEdge, GraphNode } from "./graphModel";
-import { AMBER, NEUTRAL, accentFill, assignProjectAccents, attributeShape, nodeRadius, type ProjectAccent } from "./graphStyle";
+import { AMBER, NEUTRAL, accentFill, assignProjectAccents, ATTRIBUTE_DASH, ATTRIBUTE_KIND_LABEL, nodeRadius, type ProjectAccent } from "./graphStyle";
 
 /** Selection/focus colour. Resolved on the svg root (see `style` there) so a node's own data-accent cannot recolour it. */
 const RING = "var(--mn-ring, #64748b)";
@@ -70,11 +70,11 @@ function computeLayout(prev: SimNode[], nodes: GraphNode[], edges: GraphEdge[], 
     const n = byId.get(id);
     return n ? nodeRadius(n) : 0;
   };
-  // Project -> child edges get a rest length that keeps the child just outside the (bigger) hub circle.
+  // Project -> child and hub -> member edges get a rest length that keeps the child just outside the (bigger) hub circle.
   const links: Link[] = edges
     .filter((e) => known.has(e.source) && known.has(e.target))
     .map((e) =>
-      e.prefix ? [e.source, e.target, radiusOf(e.source) + radiusOf(e.target) + 45] : [e.source, e.target],
+      e.prefix || e.attribute ? [e.source, e.target, radiusOf(e.source) + radiusOf(e.target) + 45] : [e.source, e.target],
     );
   const placed = reconcile(prev, ids, links, SEED);
   if (reduced) return { key: topologyKey(nodes, edges), nodes: runToSettle(placed, links).nodes, links, alpha: 0 };
@@ -452,14 +452,20 @@ export function GraphCanvas({
                     <circle r={r + 6} fill="none" stroke={RING} strokeWidth={2} strokeDasharray={isLinkSource && !selected ? "4 3" : undefined} />
                   )}
                   {n.attr && (
-                    <polygon
-                      points={attributeShape(n.attr, r)}
-                      fill={NEUTRAL}
-                      fillOpacity={0.35}
-                      stroke={NEUTRAL}
-                      strokeWidth={1.5}
-                      strokeLinejoin="round"
-                    />
+                    <>
+                      <circle
+                        r={r}
+                        fill={NEUTRAL}
+                        fillOpacity={0.12}
+                        stroke={NEUTRAL}
+                        strokeWidth={2}
+                        strokeDasharray={ATTRIBUTE_DASH[n.attr]}
+                        strokeLinecap="round"
+                      />
+                      <text y={4} textAnchor="middle" fontSize={10} fill={NEUTRAL} pointerEvents="none" data-attr-kind-label={n.attr}>
+                        {ATTRIBUTE_KIND_LABEL[n.attr]}
+                      </text>
+                    </>
                   )}
                   {highlighted && <circle r={r + 5} fill="none" stroke={AMBER} strokeWidth={1.5} strokeDasharray="2 3" />}
                   {n.status === "pending" && !n.attr && <circle r={r + 3} fill="none" stroke={AMBER} strokeWidth={2} />}
@@ -474,13 +480,12 @@ export function GraphCanvas({
                     strokeWidth={n.virtual ? 2 : n.archived ? 1.5 : 1}
                     strokeDasharray={n.virtual ? "6 4" : n.archived ? "3 2" : undefined}
                   />}
-                  {(current.k >= 0.5 || selected || n.isProject) && (
+                  {(current.k >= 0.5 || selected || n.isProject || n.attr) && (
                     <text
                       y={r + 13}
                       textAnchor="middle"
-                      fontSize={n.isProject ? 13 : n.attr ? 10 : 11}
-                      fontStyle={n.attr ? "italic" : undefined}
-                      fontWeight={n.isProject ? 600 : undefined}
+                      fontSize={n.isProject || n.attr ? 13 : 11}
+                      fontWeight={n.isProject || n.attr ? 600 : undefined}
                       fill="var(--color-fg, #f1f5f9)"
                       stroke="var(--color-surface-raised, #111a2b)"
                       strokeWidth={3}

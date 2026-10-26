@@ -20,6 +20,7 @@ import {
   isolatedNodes,
   isVirtualNodeId,
   searchNodes,
+  availableAttributeKinds,
   withAttributeNodes,
   type AttributeKind,
   type Graph,
@@ -72,7 +73,7 @@ export function GraphPage() {
   const [linkSource, setLinkSource] = useState<string | null>(null);
   const [linkTarget, setLinkTarget] = useState<string | null>(null);
   const [linkNotice, setLinkNotice] = useState<string | null>(null);
-  const [attributeKinds, setAttributeKinds] = useState<ReadonlySet<AttributeKind>>(() => new Set());
+  const [chosenKind, setChosenKind] = useState<AttributeKind | null>(null);
   const [attributeId, setAttributeId] = useState<string | null>(null);
   const [creatingHub, setCreatingHub] = useState(false);
   const [hubNotice, setHubNotice] = useState<string | null>(null);
@@ -104,11 +105,13 @@ export function GraphPage() {
     () => (base ? filterGraph(base, { type, collectionId, status, tag }) : null),
     [base, type, collectionId, status, tag],
   );
-  // Attribute nodes are added on the filtered graph, so one whose members are all filtered out never shows. Counts, clusters and
-  // search keep using `graph` (memories only).
+  // Attribute hubs are added on the filtered graph, so one whose members are all filtered out never shows, and a kind with no
+  // hub is not offered (a chosen kind that filters leave empty falls back to none). Counts, clusters and search keep using `graph`.
+  const availableKinds = useMemo(() => (graph && state ? availableAttributeKinds(graph, state.collections) : []), [graph, state]);
+  const attributeKind = chosenKind !== null && availableKinds.includes(chosenKind) ? chosenKind : null;
   const shown = useMemo(
-    () => (graph && state ? withAttributeNodes(graph, attributeKinds, state.collections) : null),
-    [graph, state, attributeKinds],
+    () => (graph && state ? withAttributeNodes(graph, attributeKind, state.collections) : null),
+    [graph, state, attributeKind],
   );
   // Colours come from every project, archived memories included, so neither filters nor the archived toggle recolour anything.
   const projectAccents = useMemo(() => {
@@ -440,15 +443,11 @@ export function GraphPage() {
               activeClusterIndex={activeClusterIndex >= 0 ? activeClusterIndex : null}
               isolated={isolated}
               selectedHub={selectedHub}
-              attributeKinds={attributeKinds}
-              onToggleKind={(kind, on) => {
-                setAttributeKinds((prev) => {
-                  const next = new Set(prev);
-                  if (on) next.add(kind);
-                  else next.delete(kind);
-                  return next;
-                });
-                if (!on) setAttributeId(null);
+              availableKinds={availableKinds}
+              attributeKind={attributeKind}
+              onChooseKind={(kind) => {
+                setChosenKind(kind);
+                setAttributeId(null);
               }}
               selectedAttribute={selectedAttribute}
               creatingHub={creatingHub}

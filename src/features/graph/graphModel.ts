@@ -28,7 +28,7 @@ export interface GraphNode {
   projectName?: string | null;
   /** Synthetic project hub (id `project:<projectId>`, or `project:<key>` for a prefix-only key with no Project): no memory is titled like the project yet. Never a real memory id. */
   virtual?: boolean;
-  /** Optional extra node (see `withAttributeNodes`): a collection, type, tag or status shared by memories. Not a memory. */
+  /** Optional big hub (see `withAttributeNodes`): a collection, type, tag or status value shared by memories, drawn around them. Not a memory. */
   attr?: AttributeKind;
 }
 
@@ -36,8 +36,6 @@ export type AttributeKind = "collection" | "type" | "tag" | "status";
 export const ATTRIBUTE_KINDS: readonly AttributeKind[] = ["collection", "type", "tag", "status"];
 /** At most this many attribute nodes per kind (most-used first). */
 export const MAX_ATTRIBUTE_NODES = 60;
-/** A tag only becomes a node when this many memories use it. */
-export const MIN_TAG_MEMBERS = 2;
 
 /** Id prefix of virtual project hubs; real memory ids never use it. */
 export const PROJECT_NODE_PREFIX = "project:";
@@ -131,73 +129,76 @@ export function buildGraph(state: WorkspaceState, opts: { showArchived?: boolean
   return { nodes, edges };
 }
 
-/**
- * Adds optional attribute nodes (collection / type / tag / status) and light edges memory -> attribute for the given
- * kinds. Memories only (never project hubs). Existing nodes and edges are untouched, and with no kinds the same graph
- * is returned. Tags need MIN_TAG_MEMBERS memories; every kind keeps its MAX_ATTRIBUTE_NODES most-used attributes.
- * Pass the already filtered graph: attributes whose members are all filtered out then never appear.
- */
-export function withAttributeNodes(graph: Graph, kinds: Iterable<AttributeKind>, collections: Record<string, { name: string }>): Graph {
-  const wanted = new Set(kinds);
-  if (wanted.size === 0) return graph;
-  const nodes: GraphNode[] = [];
-  const edges: GraphEdge[] = [];
-  const attributesOf = (m: GraphNode): { kind: AttributeKind; key: string; label: string }[] => {
-    const out: { kind: AttributeKind; key: string; label: string }[] = [];
-    if (wanted.has("collection") && m.collectionId !== null) {
-      out.push({ kind: "collection", key: m.collectionId, label: Object.hasOwn(collections, m.collectionId) ? collections[m.collectionId].name : "Unknown collection" });
-    }
-    if (wanted.has("type")) out.push({ kind: "type", key: m.type, label: typeLabel(m.type) });
-    if (wanted.has("status")) {
+type AttributeGroup = { kind: AttributeKind; key: string; label: string; members: string[] };
+
+/** Attribute values of one kind used by memories (never hubs or other attribute nodes), grouped by hub id, in a single pass. */
+function groupAttributes(graph: Graph, kind: AttributeKind, collections: Record<string, { name: string }>): Map<string, AttributeGroup> {
+  const groups = new Map<string, AttributeGroup>();
+  const add = (m: GraphNode, key: string, label: string) => {
+    const id = `${kind}:${key}`;
+    const g = groups.get(id);
+    if (g) g.members.push(m.id);
+    else groups.set(id, { kind, key, label, members: [m.id] });
+  };
+  for (const m of graph.nodes) {
+    if (m.virtual || m.attr) continue;
+    if (kind === "collection") {
+      if (m.collectionId !== null) add(m, m.collectionId, Object.hasOwn(collections, m.collectionId) ? collections[m.collectionId].name : "Unknown collection");
+    } else if (kind === "type") {
+      add(m, m.type, typeLabel(m.type));
+    } else if (kind === "status") {
       const status: MemoryStatus = m.archived ? "archived" : m.status;
-      out.push({ kind: "status", key: status, label: STATUS_META[status].label });
-    }
-    if (wanted.has("tag")) {
+      add(m, status, STATUS_META[status].label);
+    } else {
       const seen = new Set<string>();
       for (const t of m.tags) {
         const key = t.trim().toLowerCase();
         if (key === "" || seen.has(key)) continue;
         seen.add(key);
-        out.push({ kind: "tag", key, label: `#${key}` });
+        add(m, key, `#${key}`);
       }
-    }
-    return out;
-  };
-  const groups = new Map<string, { kind: AttributeKind; key: string; label: string; members: string[] }>();
-  for (const m of graph.nodes) {
-    if (m.virtual || m.attr) continue;
-    for (const a of attributesOf(m)) {
-      const id = `${a.kind}:${a.key}`;
-      const g = groups.get(id);
-      if (g) g.members.push(m.id);
-      else groups.set(id, { ...a, members: [m.id] });
     }
   }
-  for (const kind of ATTRIBUTE_KINDS) {
-    if (!wanted.has(kind)) continue;
-    const chosen = [...groups.entries()]
-      .filter(([, g]) => g.kind === kind && (kind !== "tag" || g.members.length >= MIN_TAG_MEMBERS))
-      .sort((a, b) => b[1].members.length - a[1].members.length || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
-      .slice(0, MAX_ATTRIBUTE_NODES)
-      .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
-    for (const [id, g] of chosen) {
-      nodes.push({
-        id,
-        title: g.label,
-        type: kind,
-        status: "saved",
-        archived: false,
-        collectionId: null,
-        tags: [],
-        degree: g.members.length,
-        childCount: 0,
-        isProject: false,
-        project: null,
-        attr: kind,
-      });
-      for (const memberId of g.members) {
-        edges.push({ id: `attr:${id}:${memberId}`, source: memberId, target: id, label: kind, origin: "process", demo: false, attribute: true });
-      }
+  return groups;
+}
+
+/** Kinds that have at least one attribute hub with a memory in this (already filtered) graph: the only ones worth offering. */
+export function availableAttributeKinds(graph: Graph, collections: Record<string, { name: string }>): AttributeKind[] {
+  return ATTRIBUTE_KINDS.filter((k) => groupAttributes(graph, k, collections).size > 0);
+}
+
+/**
+ * Adds big attribute hubs for ONE kind (collection / type / tag / status) and light edges memory -> hub. A hub exists only
+ * when at least one memory in `graph` has that value, and the MAX_ATTRIBUTE_NODES most-used values are kept. Memories only
+ * (never project hubs). Existing nodes and edges are untouched; with no kind (or no hub) the same graph is returned.
+ * Pass the already filtered graph: hubs whose members are all filtered out then never appear.
+ */
+export function withAttributeNodes(graph: Graph, kind: AttributeKind | null, collections: Record<string, { name: string }>): Graph {
+  if (kind === null) return graph;
+  const chosen = [...groupAttributes(graph, kind, collections).entries()]
+    .sort((a, b) => b[1].members.length - a[1].members.length || (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0))
+    .slice(0, MAX_ATTRIBUTE_NODES)
+    .sort((a, b) => (a[0] < b[0] ? -1 : a[0] > b[0] ? 1 : 0));
+  if (chosen.length === 0) return graph;
+  const nodes: GraphNode[] = [];
+  const edges: GraphEdge[] = [];
+  for (const [id, g] of chosen) {
+    nodes.push({
+      id,
+      title: g.label,
+      type: kind,
+      status: "saved",
+      archived: false,
+      collectionId: null,
+      tags: [],
+      degree: g.members.length,
+      childCount: g.members.length,
+      isProject: false,
+      project: null,
+      attr: kind,
+    });
+    for (const memberId of g.members) {
+      edges.push({ id: `attr:${id}:${memberId}`, source: memberId, target: id, label: kind, origin: "process", demo: false, attribute: true });
     }
   }
   return { nodes: [...graph.nodes, ...nodes], edges: [...graph.edges, ...edges] };

@@ -67,22 +67,26 @@ export const AMBER = "var(--color-amber-500, #f59e0b)";
 export const ROSE = "var(--color-rose-500, #f43f5e)";
 export const ACCENT = "var(--color-accent-500, #64748b)";
 
-/** Node radius grows with degree (capped); project hubs are bigger and grow with their child count (capped). */
+/** Project hub radius: grows with the child count, capped. */
+const projectRadius = (childCount: number): number => Math.min(40, 14 + Math.sqrt(childCount) * 4);
+
+/** Attribute hubs are 35% bigger than a project hub with the same member count (cap 54 vs 40), so they always read as the biggest circles. */
+export const ATTRIBUTE_HUB_SCALE = 1.35;
+
+/** Node radius grows with degree (capped); project hubs are bigger and grow with their child count (capped); attribute hubs are bigger still. */
 export function nodeRadius(node: Pick<GraphNode, "degree"> & Partial<Pick<GraphNode, "childCount" | "isProject" | "attr">>): number {
-  if (node.attr) return 8;
-  if (node.isProject) return Math.min(40, 14 + Math.sqrt(node.childCount ?? 0) * 4);
+  if (node.attr) return Math.min(54, ATTRIBUTE_HUB_SCALE * (14 + Math.sqrt(node.childCount ?? 0) * 4));
+  if (node.isProject) return projectRadius(node.childCount ?? 0);
   return 7 + Math.min(10, node.degree * 1.5);
 }
 
-/** Polygon points (centred on 0,0) for an attribute node shape: square, diamond, hexagon, triangle. */
-export function attributeShape(kind: AttributeKind, r: number): string {
-  const pts: [number, number][] =
-    kind === "collection"
-      ? [[-1, -1], [1, -1], [1, 1], [-1, 1]]
-      : kind === "type"
-        ? [[0, -1.3], [1.3, 0], [0, 1.3], [-1.3, 0]]
-        : kind === "tag"
-          ? [[1, 0], [0.5, 0.87], [-0.5, 0.87], [-1, 0], [-0.5, -0.87], [0.5, -0.87]]
-          : [[0, -1.2], [1.1, 0.9], [-1.1, 0.9]];
-  return pts.map(([x, y]) => `${(x * r).toFixed(1)},${(y * r).toFixed(1)}`).join(" ");
-}
+/** Outline dash pattern per attribute kind, so the four kinds of neutral hub differ by more than their label. */
+export const ATTRIBUTE_DASH: Record<AttributeKind, string | undefined> = {
+  collection: undefined,
+  type: "10 4",
+  tag: "2 4",
+  status: "10 3 2 3",
+};
+
+/** Kind label drawn inside a hub. */
+export const ATTRIBUTE_KIND_LABEL: Record<AttributeKind, string> = { collection: "Collection", type: "Type", tag: "Tag", status: "Status" };

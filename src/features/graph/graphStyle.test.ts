@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { PROJECT_ACCENTS, PROJECT_SHADES, accentFill, assignProjectAccents, hashKey, nodeRadius } from "./graphStyle";
+import { PROJECT_ACCENTS, PROJECT_SHADES, accentFill, assignProjectAccents, hashKey, nodeRadius, ATTRIBUTE_HUB_SCALE } from "./graphStyle";
 
 describe("nodeRadius", () => {
   it("keeps ordinary nodes at the degree-based size", () => {
@@ -99,5 +99,23 @@ describe("assignProjectAccents", () => {
 describe("accentFill", () => {
   it("reads the per-element accent variable with a neutral fallback", () => {
     expect(accentFill(500)).toBe("var(--color-accent-500, #64748b)");
+  });
+});
+
+describe("nodeRadius for attribute hubs", () => {
+  it("is bigger than a project hub with the same member count, up to the caps", () => {
+    for (const n of [0, 1, 4, 9, 30, 100, 1000]) {
+      const project = nodeRadius({ degree: n, childCount: n, isProject: true });
+      const attr = nodeRadius({ degree: n, childCount: n, attr: "tag" });
+      expect(attr).toBeGreaterThan(project);
+      expect(attr).toBeGreaterThanOrEqual(project * 1.3);
+    }
+    expect(nodeRadius({ degree: 4, childCount: 4, attr: "type" })).toBeCloseTo(ATTRIBUTE_HUB_SCALE * (14 + 8));
+  });
+
+  it("grows with members but is capped, and is bigger than any memory", () => {
+    expect(nodeRadius({ degree: 9, childCount: 9, attr: "type" })).toBeGreaterThan(nodeRadius({ degree: 1, childCount: 1, attr: "type" }));
+    expect(nodeRadius({ degree: 5000, childCount: 5000, attr: "status" })).toBe(54);
+    expect(nodeRadius({ degree: 1, childCount: 1, attr: "type" })).toBeGreaterThan(nodeRadius({ degree: 99 }));
   });
 });

@@ -14,6 +14,10 @@ export interface SimNode {
   pinned?: boolean;
   /** Attribute nodes (category hubs / their value nodes) are pushed well away from project hubs and memories. */
   attr?: "category" | "value";
+  /** Corner of the graph this hub drifts toward: organization hubs top-left, the Collections hub top-right. */
+  corner?: "tl" | "tr";
+  /** Drawn radius: two nodes are pushed apart until their circles (plus COLLISION_GAP) no longer overlap. */
+  r?: number;
 }
 
 /** A link; the optional third item is a custom rest length (project -> child), pulled with a stronger spring. */
@@ -24,10 +28,17 @@ const HUB_SPRING = 1.8;
 
 /** Repulsion multiplier between an attribute node and a non-attribute node (project hub or memory). */
 export const ATTR_REPULSION = 8;
+/** Free space kept between two circles. */
+export const COLLISION_GAP = 16;
+/** Push per unit of overlap between two circles (scaled by alpha like every other force). */
+const COLLISION_STRENGTH = 1.5;
+
 /** Constant outward push on category hubs, away from the centroid of the non-attribute nodes. */
-const CATEGORY_OUTWARD = 10;
+const CATEGORY_OUTWARD = 16;
+/** Constant push (per axis) that moves corner hubs toward their corner, away from everything else. */
+const CORNER_PUSH = 12;
 /** Ring radius (beyond the non-attribute nodes' extent) where new category hubs start. */
-const CATEGORY_RING_GAP = 220;
+const CATEGORY_RING_GAP = 500;
 
 export interface LayoutOptions {
   repulsion: number;
@@ -42,8 +53,8 @@ export const DEFAULT_LAYOUT: LayoutOptions = {
   repulsion: 3200,
   springLength: 95,
   springStrength: 0.07,
-  gravity: 0.012,
-  damping: 0.78,
+  gravity: 0.016,
+  damping: 0.7,
   maxSpeed: 30,
 };
 
@@ -131,10 +142,12 @@ export function step(
       const f = (opts.repulsion * (cross ? ATTR_REPULSION : 1)) / Math.max(d2, 100);
       const ux = dx / d;
       const uy = dy / d;
-      fx[i] += ux * f;
-      fy[i] += uy * f;
-      fx[j] -= ux * f;
-      fy[j] -= uy * f;
+      const minDist = (nodes[i].r ?? 0) + (nodes[j].r ?? 0) + COLLISION_GAP;
+      const push = d < minDist && (nodes[i].r !== undefined || nodes[j].r !== undefined) ? (minDist - d) * COLLISION_STRENGTH : 0;
+      fx[i] += ux * (f + push);
+      fy[i] += uy * (f + push);
+      fx[j] -= ux * (f + push);
+      fy[j] -= uy * (f + push);
     }
   }
 
@@ -179,6 +192,13 @@ export function step(
       fx[i] += (dx / d) * CATEGORY_OUTWARD;
       fy[i] += (dy / d) * CATEGORY_OUTWARD;
     }
+  }
+
+  for (let i = 0; i < n; i++) {
+    const corner = nodes[i].corner;
+    if (!corner) continue;
+    fx[i] += corner === "tl" ? -CORNER_PUSH : CORNER_PUSH;
+    fy[i] -= CORNER_PUSH;
   }
 
   return nodes.map((node, i) => {
@@ -254,15 +274,41 @@ export function placeAttributeNodes(
     const a = -Math.PI / 2 + (i / hubs.length) * Math.PI * 2;
     out.set(h.id, { ...h, x: cx + Math.cos(a) * ring, y: cy + Math.sin(a) * ring });
   });
-  let seq = 0;
+  // New value nodes sit evenly spaced on a circle around their hub, at the link's rest length, so they start tidy
+  // instead of jostling out of a pile.
+  const fresh = new Map<string, SimNode[]>();
   for (const v of nodes) {
     if (v.attr !== "value" || known.has(v.id)) continue;
-    const hub = out.get(categoryOf.get(v.id) ?? "");
-    if (!hub) continue;
-    const a = seq++ * 2.399963; // golden angle: deterministic spread around the hub
-    out.set(v.id, { ...v, x: hub.x + Math.cos(a) * 40, y: hub.y + Math.sin(a) * 40 });
+    const hubId = categoryOf.get(v.id) ?? "";
+    if (out.has(hubId)) fresh.set(hubId, [...(fresh.get(hubId) ?? []), v]);
+  }
+  for (const [hubId, values] of fresh) {
+    const hub = out.get(hubId)!;
+    values.forEach((v, i) => {
+      const a = -Math.PI / 2 + (i / values.length) * Math.PI * 2;
+      const dist = (hub.r ?? 0) + (v.r ?? 0) + 100;
+      out.set(v.id, { ...v, x: hub.x + Math.cos(a) * dist, y: hub.y + Math.sin(a) * dist });
+    });
   }
   return nodes.map((n) => out.get(n.id)!);
+}
+
+/** Puts freshly added corner hubs (organizations top-left, the Collections hub top-right) just beyond that corner of everything else. */
+export function placeCornerNodes(nodes: SimNode[], known: ReadonlySet<string>): SimNode[] {
+  const rest = nodes.filter((n) => !n.corner);
+  if (rest.length === 0) return nodes;
+  const minX = Math.min(...rest.map((n) => n.x));
+  const maxX = Math.max(...rest.map((n) => n.x));
+  const minY = Math.min(...rest.map((n) => n.y));
+  const seq = { tl: 0, tr: 0 };
+  const out = new Map<string, SimNode>();
+  for (const n of nodes) {
+    if (!n.corner || known.has(n.id)) continue;
+    const i = seq[n.corner]++;
+    const x = n.corner === "tl" ? minX - 120 - i * 40 : maxX + 120 + i * 40;
+    out.set(n.id, { ...n, x, y: minY - 120 - i * 40 });
+  }
+  return out.size === 0 ? nodes : nodes.map((n) => out.get(n.id) ?? n);
 }
 
 export interface ViewTransform {

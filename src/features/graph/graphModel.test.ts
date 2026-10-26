@@ -485,13 +485,36 @@ describe("withAttributeNodes", () => {
     expect(JSON.stringify(withAttributeNodes(g, [], collections))).toBe(before);
   });
 
-  it("adds a Collections hub, a small node per collection and a link from each memory; memories without a collection and project hubs get none", () => {
+  it("adds a Collections hub and a small node per collection that carries its memories but is not linked to them", () => {
     const g = withAttributeNodes(base(), ["collection"], collections);
     expect(categories(g)).toEqual(["category:collection"]);
     expect(g.nodes.find((n) => n.id === "category:collection")!.title).toBe("Collections");
     expect(values(g)).toEqual(["collection:c1"]);
-    expect(g.nodes.find((n) => n.id === "collection:c1")!.title).toBe("Work");
-    expect(links(g, "collection:c1")).toEqual(["a", "b"]);
+    const c1 = g.nodes.find((n) => n.id === "collection:c1")!;
+    expect(c1.title).toBe("Work");
+    expect(c1.memberIds).toEqual(["a", "b"]);
+    expect(c1.childCount).toBe(2);
+    expect(links(g, "collection:c1")).toEqual([]); // never linked to memories
+  });
+
+  it("links a collection only to the project hubs of its memories (one per project), never to memories", () => {
+    const g0: Graph = {
+      nodes: [
+        node("project:p1", { virtual: true, isProject: true, type: "project", project: "p1" }),
+        node("project:p2", { virtual: true, isProject: true, type: "project", project: "p2" }),
+        node("a", { collectionId: "c1", project: "p1" }),
+        node("b", { collectionId: "c1", project: "p1" }),
+        node("c", { collectionId: "c1", project: "p2" }),
+        node("d", { collectionId: "c1" }),
+      ],
+      edges: [],
+    };
+    const g = withAttributeNodes(g0, ["collection"], collections);
+    const toProjects = g.edges.filter((e) => e.projectLink);
+    expect(toProjects.map((e) => [e.source, e.target]).sort()).toEqual([["collection:c1", "project:p1"], ["collection:c1", "project:p2"]]);
+    expect(toProjects.every((e) => e.attribute && !e.category)).toBe(true);
+    expect(g.edges.filter((e) => e.attribute && !e.category && !e.projectLink)).toHaveLength(0);
+    expect(g.edges.filter((e) => e.category)).toHaveLength(1); // still grouped under the Collections hub
   });
 
   it("adds type nodes (never the project hub's own type)", () => {
@@ -541,7 +564,7 @@ describe("withAttributeNodes", () => {
   it("never creates a value without a linked memory nor a category without a value", () => {
     const g = withAttributeNodes(base(), ALL, collections);
     for (const n of g.nodes.filter((x) => x.attrRole === "value")) {
-      expect(n.childCount).toBe(links(g, n.id).length);
+      expect(n.childCount).toBe(n.memberIds?.length ?? links(g, n.id).length);
       expect(n.childCount).toBeGreaterThan(0);
     }
     for (const n of g.nodes.filter((x) => x.attrRole === "category")) expect(n.childCount).toBeGreaterThan(0);
@@ -575,7 +598,7 @@ describe("withAttributeNodes", () => {
     const t0 = performance.now();
     const g = withAttributeNodes({ nodes, edges: [] }, ALL, many);
     expect(performance.now() - t0).toBeLessThan(1000);
-    expect(g.edges.filter((e) => e.attribute && !e.category)).toHaveLength(5000 * 5); // collection + type + status + 2 tags per memory
+    expect(g.edges.filter((e) => e.attribute && !e.category)).toHaveLength(5000 * 4); // type + status + 2 tags per memory (collections link to projects, not memories)
   });
 
   it("uses safe keys for odd names and unknown collections", () => {
@@ -650,9 +673,11 @@ describe("withOrganizationNodes", () => {
     expect(withOrganizationNodes(g, createSeedWorkspace())).toBe(g);
   });
 
-  it("adds an org:<id> hub with its project count and links every project hub to it; nothing else changes", () => {
+  it("adds an org:<id> hub with its project count and links only the collection nodes of its projects to it; nothing else changes", () => {
     const { s, rok, vt } = setup();
-    const base = buildGraph(s);
+    const base = withAttributeNodes(buildGraph(s), ["collection"], s.collections);
+    const collectionNode = base.nodes.find((n) => n.attr === "collection" && n.attrRole === "value")!;
+    expect(collectionNode.project).toBe(vt.id);
     const g = withOrganizationNodes(base, s);
     const hub = g.nodes.find((n) => n.id === organizationNodeId(rok.id))!;
     expect(hub).toMatchObject({ id: `org:${rok.id}`, title: "ROK", organization: true, degree: 1, childCount: 1, project: null, isProject: false });
@@ -660,7 +685,9 @@ describe("withOrganizationNodes", () => {
     expect(g.edges.slice(0, base.edges.length)).toEqual(base.edges);
     const links = g.edges.filter((e) => e.organization);
     expect(links).toHaveLength(1);
-    expect(links[0]).toMatchObject({ source: `project:${vt.id}`, target: hub.id, organization: true });
+    expect(links[0]).toMatchObject({ source: collectionNode.id, target: hub.id, organization: true });
+    // without collection nodes there is nothing to link: never a project hub or a memory
+    expect(withOrganizationNodes(buildGraph(s), s).edges.filter((e) => e.organization)).toHaveLength(0);
     expect(base.nodes.some((n) => n.organization)).toBe(false);
   });
 
@@ -701,5 +728,35 @@ describe("withOrganizationNodes", () => {
     // attribute nodes only ever group memories
     const withAttrs = withAttributeNodes(withOrganizationNodes(buildGraph(extra), extra), ["type"], {});
     expect(withAttrs.nodes.filter((n) => n.attr)).toHaveLength(0);
+  });
+});
+
+describe("collection value nodes take their project's colour owner", () => {
+  const cols = { c1: { name: "vt", projectId: "prj_a" }, c2: { name: "mixed" }, c3: { name: "none" } };
+  const g: Graph = {
+    nodes: [
+      node("m1", { collectionId: "c1", project: "prj_a" }),
+      node("m2", { collectionId: "c1", project: "prj_b" }),
+      node("m3", { collectionId: "c2", project: "prj_b" }),
+      node("m4", { collectionId: "c2", project: "prj_b" }),
+      node("m5", { collectionId: "c2", project: "prj_a" }),
+      node("m6", { collectionId: "c3" }),
+    ],
+    edges: [],
+  };
+  const byId = (out: Graph, id: string) => out.nodes.find((n) => n.id === id)!;
+
+  it("uses the project the collection is the folder of, else the majority project of its memories, else none", () => {
+    const out = withAttributeNodes(g, ["collection"], cols);
+    expect(byId(out, "collection:c1").project).toBe("prj_a");
+    expect(byId(out, "collection:c2").project).toBe("prj_b");
+    expect(byId(out, "collection:c3").project).toBeNull();
+    expect(byId(out, "category:collection").project).toBeNull();
+  });
+
+  it("ignores a folder project that is not in the graph and leaves other kinds neutral", () => {
+    const out = withAttributeNodes(g, ["collection", "type"], { c1: { name: "vt", projectId: "prj_gone" }, c2: { name: "mixed" }, c3: { name: "none" } });
+    expect(byId(out, "collection:c1").project).toBe("prj_a");
+    expect(byId(out, "type:fact").project).toBeNull();
   });
 });

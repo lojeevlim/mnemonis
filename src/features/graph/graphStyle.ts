@@ -76,13 +76,21 @@ export const ATTRIBUTE_HUB_SCALE = 1.35;
 /** Organization hubs are the biggest circles: bigger than any project hub (cap 40), growing a little with their project count. */
 const organizationRadius = (projectCount: number): number => Math.min(64, 44 + Math.sqrt(projectCount) * 5);
 
-/** Radius of an attribute value node: clearly below the smallest memory node (7). */
+/** A collection node is this fraction of an organization hub with the same count (still big enough to hold its label, see GraphCanvas). */
+export const COLLECTION_NODE_SCALE = 0.7;
+
+/** Radius of a tag / type / status value node: clearly below the smallest memory node (7). */
 export const VALUE_NODE_RADIUS = 4.5;
+
+
 
 /** Node radius grows with degree (capped); project hubs are bigger and grow with their child count (capped); category hubs are bigger still; value nodes are smaller than any memory. */
 export function nodeRadius(node: Pick<GraphNode, "degree"> & Partial<Pick<GraphNode, "childCount" | "isProject" | "attr" | "attrRole" | "organization">>): number {
   if (node.organization) return organizationRadius(node.childCount ?? 0);
-  if (node.attr && node.attrRole === "value") return VALUE_NODE_RADIUS;
+  // A collection node grows like an organization hub but is drawn smaller; other value nodes stay tiny.
+  if (node.attr && node.attrRole === "value") return node.attr === "collection" ? COLLECTION_NODE_SCALE * organizationRadius(node.childCount ?? 0) : VALUE_NODE_RADIUS;
+  // The Collections hub must stay bigger than its (organization-sized) collection nodes.
+  if (node.attr === "collection") return Math.min(80, organizationRadius(node.childCount ?? 0) + 16);
   if (node.attr) return Math.min(54, ATTRIBUTE_HUB_SCALE * (14 + Math.sqrt(node.childCount ?? 0) * 4));
   if (node.isProject) return projectRadius(node.childCount ?? 0);
   return 7 + Math.min(10, node.degree * 1.5);

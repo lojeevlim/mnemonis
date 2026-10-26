@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { PROJECT_ACCENTS, PROJECT_SHADES, accentFill, assignProjectAccents, hashKey, nodeRadius, ATTRIBUTE_HUB_SCALE, VALUE_NODE_RADIUS } from "./graphStyle";
+import { PROJECT_ACCENTS, PROJECT_SHADES, accentFill, assignProjectAccents, hashKey, nodeRadius, ATTRIBUTE_HUB_SCALE, COLLECTION_NODE_SCALE, VALUE_NODE_RADIUS } from "./graphStyle";
 
 describe("nodeRadius", () => {
   it("keeps ordinary nodes at the degree-based size", () => {
@@ -130,9 +130,24 @@ describe("nodeRadius for category hubs and value nodes", () => {
   it("value nodes are a fixed size clearly smaller than the smallest memory node, whatever their member count", () => {
     const smallestMemory = nodeRadius({ degree: 0 });
     for (const n of [0, 1, 50, 5000]) {
-      const r = nodeRadius({ degree: n, childCount: n, attr: "collection", attrRole: "value" });
+      const r = nodeRadius({ degree: n, childCount: n, attr: "tag", attrRole: "value" });
       expect(r).toBe(VALUE_NODE_RADIUS);
       expect(r).toBeLessThanOrEqual(smallestMemory - 2);
+    }
+  });
+
+  it("the Collections hub is bigger than any collection node", () => {
+    for (const n of [0, 1, 4, 50, 5000]) {
+      expect(nodeRadius({ degree: n, childCount: n, attr: "collection", attrRole: "category" })).toBeGreaterThan(nodeRadius({ degree: n, childCount: n, attr: "collection", attrRole: "value" }));
+    }
+  });
+
+  it("a collection node is smaller than an organization hub with the same count, but big enough for its inside label", () => {
+    for (const n of [0, 1, 4, 50, 5000]) {
+      const c = nodeRadius({ degree: n, childCount: n, attr: "collection", attrRole: "value" });
+      expect(c).toBeCloseTo(COLLECTION_NODE_SCALE * nodeRadius({ degree: n, childCount: n, organization: true }));
+      expect(c).toBeLessThan(nodeRadius({ degree: n, childCount: n, organization: true }));
+      expect(c).toBeGreaterThanOrEqual(28);
     }
   });
 });

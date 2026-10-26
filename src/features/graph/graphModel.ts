@@ -30,6 +30,8 @@ export interface GraphNode {
   virtual?: boolean;
   /** Optional attribute node (see `withAttributeNodes`): a big category hub (Types, Collections, ...) or a small value node (one collection, type, tag or status). Not a memory. */
   attr?: AttributeKind;
+  /** Collection value nodes only: ids of the memories in the collection (they are not linked to it with edges; the collection links to projects). */
+  memberIds?: string[];
   /** Role of an attribute node: the big category hub, or a small value node around it. */
   attrRole?: "category" | "value";
   /** Organization hub (see `withOrganizationNodes`): a big circle above the project hubs. Not a memory; `degree` / `childCount` = its project count. */
@@ -60,6 +62,8 @@ export interface GraphEdge {
   attribute?: boolean;
   /** With `attribute`: this is a value node -> category hub link (the rest are memory -> value links). */
   category?: boolean;
+  /** Collection node -> project hub link (see `withAttributeNodes`): decoration only, never a relation. */
+  projectLink?: boolean;
   /** Project hub -> organization hub link (see `withOrganizationNodes`): decoration only, never a relation. */
   organization?: boolean;
 }
@@ -187,13 +191,40 @@ export const categoryNodeId = (kind: AttributeKind): string => `category:${kind}
  * memory -> its value nodes (`attribute`). Memories only (never project hubs). Existing nodes and edges are untouched and an
  * empty selection (or nothing to show) returns the very same graph. Pass the already filtered graph.
  */
-export function withAttributeNodes(graph: Graph, kinds: Iterable<AttributeKind>, collections: Record<string, { name: string }>): Graph {
+export function withAttributeNodes(graph: Graph, kinds: Iterable<AttributeKind>, collections: Record<string, { name: string; projectId?: string | null }>): Graph {
   const wanted = new Set(kinds);
   if (wanted.size === 0) return graph;
   const taken = new Set(graph.nodes.map((n) => n.id));
   const nodes: GraphNode[] = [];
   const edges: GraphEdge[] = [];
-  const make = (id: string, title: string, kind: AttributeKind, role: "category" | "value", count: number): GraphNode => ({
+  const projectOfNode = new Map(graph.nodes.map((n) => [n.id, n.project]));
+  // project id -> its hub nodes (a virtual hub, and / or the memory titled like the project)
+  const hubsOf = new Map<string, string[]>();
+  for (const n of graph.nodes) {
+    if (!n.isProject || n.project === null || n.attr || n.organization) continue;
+    const list = hubsOf.get(n.project);
+    if (list) list.push(n.id);
+    else hubsOf.set(n.project, [n.id]);
+  }
+  const knownProjects = new Set([...projectOfNode.values()].filter((p): p is string => p !== null));
+  /**
+   * Colour owner of a collection value node, so the circle matches its project and memories: the project the collection
+   * is the folder of when that project is in the graph, else the project most of its memories belong to (ties: first seen).
+   */
+  const collectionProject = (key: string, members: string[]): string | null => {
+    const own = Object.hasOwn(collections, key) ? collections[key].projectId : null;
+    if (own && knownProjects.has(own)) return own;
+    const votes = new Map<string, number>();
+    for (const m of members) {
+      const p = projectOfNode.get(m) ?? null;
+      if (p !== null) votes.set(p, (votes.get(p) ?? 0) + 1);
+    }
+    let best: string | null = null;
+    let bestVotes = 0;
+    for (const [p, n] of votes) if (n > bestVotes) [best, bestVotes] = [p, n];
+    return best;
+  };
+  const make = (id: string, title: string, kind: AttributeKind, role: "category" | "value", count: number, project: string | null = null): GraphNode => ({
     id,
     title,
     type: kind,
@@ -204,7 +235,7 @@ export function withAttributeNodes(graph: Graph, kinds: Iterable<AttributeKind>,
     degree: count,
     childCount: count,
     isProject: false,
-    project: null,
+    project,
     attr: kind,
     attrRole: role,
   });
@@ -219,8 +250,19 @@ export function withAttributeNodes(graph: Graph, kinds: Iterable<AttributeKind>,
     if (chosen.length === 0 || taken.has(hubId)) continue;
     nodes.push(make(hubId, ATTRIBUTE_CATEGORY_LABEL[kind], kind, "category", chosen.length));
     for (const [id, g] of chosen) {
-      nodes.push(make(id, g.label, kind, "value", g.members.length));
+      const valueNode = make(id, g.label, kind, "value", g.members.length, kind === "collection" ? collectionProject(g.key, g.members) : null);
+      nodes.push(kind === "collection" ? { ...valueNode, memberIds: g.members } : valueNode);
       edges.push({ id: `cat:${id}`, source: id, target: hubId, label: kind, origin: "process", demo: false, attribute: true, category: true });
+      if (kind === "collection") {
+        // A collection links only to the projects its memories belong to (their project hubs), never to the memories.
+        const projects = new Set(g.members.map((m) => projectOfNode.get(m) ?? null).filter((p): p is string => p !== null));
+        for (const project of [...projects].sort()) {
+          for (const hub of hubsOf.get(project) ?? []) {
+            edges.push({ id: `attr:${id}:${hub}`, source: id, target: hub, label: kind, origin: "process", demo: false, attribute: true, projectLink: true });
+          }
+        }
+        continue;
+      }
       for (const memberId of g.members) {
         edges.push({ id: `attr:${id}:${memberId}`, source: memberId, target: id, label: kind, origin: "process", demo: false, attribute: true });
       }
@@ -238,8 +280,9 @@ export const MAX_ORGANIZATION_NODES = LIMITS.maxOrganizations;
 
 /**
  * Adds one big organization hub (`org:<organizationId>`, labelled with the organization's name; `degree` = its number of
- * projects) per organization of `state` (the oldest MAX_ORGANIZATION_NODES), always, plus a link from every project hub
- * of `graph` (a virtual hub, or the memory titled like the project) to the hub of the project's organization.
+ * projects) per organization of `state` (the oldest MAX_ORGANIZATION_NODES), always, plus a link from every collection node
+ * of `graph` (see withAttributeNodes) that belongs to one of the organization's projects to the organization hub. An
+ * organization links to collection nodes only, never to project hubs or memories.
  * Organization hubs are not memories: they never get a project colour, and callers keep counting, clustering and searching
  * on the graph WITHOUT them. Existing nodes and edges are untouched (an id already taken is skipped) and a workspace
  * without organizations returns the very same graph. Pass the graph that is drawn (after the attribute nodes).
@@ -255,13 +298,13 @@ export function withOrganizationNodes(graph: Graph, state: WorkspaceState): Grap
     if (list) list.push(p.id);
     else projectsOf.set(p.organizationId, [p.id]);
   }
-  // project id -> its hub nodes in this graph (a real parent memory and / or the virtual hub)
-  const hubsOf = new Map<string, string[]>();
+  // project id -> the collection nodes drawn for it (see withAttributeNodes: a collection node's `project` is its colour owner)
+  const collectionsOf = new Map<string, string[]>();
   for (const n of graph.nodes) {
-    if (!n.isProject || n.project === null || n.attr || n.organization) continue;
-    const list = hubsOf.get(n.project);
+    if (n.attr !== "collection" || n.attrRole !== "value" || n.project === null) continue;
+    const list = collectionsOf.get(n.project);
     if (list) list.push(n.id);
-    else hubsOf.set(n.project, [n.id]);
+    else collectionsOf.set(n.project, [n.id]);
   }
   const nodes: GraphNode[] = [];
   const edges: GraphEdge[] = [];
@@ -284,8 +327,8 @@ export function withOrganizationNodes(graph: Graph, state: WorkspaceState): Grap
       organization: true,
     });
     for (const projectId of members) {
-      for (const hub of hubsOf.get(projectId) ?? []) {
-        edges.push({ id: `org:${o.id}:${hub}`, source: hub, target: id, label: "organization", origin: "process", demo: false, organization: true });
+      for (const col of collectionsOf.get(projectId) ?? []) {
+        edges.push({ id: `org:${o.id}:${col}`, source: col, target: id, label: "organization", origin: "process", demo: false, organization: true });
       }
     }
   }

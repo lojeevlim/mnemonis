@@ -49,6 +49,14 @@ function hubSelection(graph: Graph, hub: GraphNode): { hub: GraphNode; members: 
 function attributeSelection(graph: Graph, node: GraphNode): { node: GraphNode; members: GraphNode[] } {
   const byId = new Map(graph.nodes.map((n) => [n.id, n]));
   const category = node.attrRole === "category";
+  // A collection is not linked to its memories by edges; it carries their ids.
+  if (node.memberIds) {
+    const members = node.memberIds
+      .map((id) => byId.get(id))
+      .filter((n): n is GraphNode => !!n)
+      .sort((a, b) => a.title.localeCompare(b.title) || (a.id < b.id ? -1 : 1));
+    return { node, members };
+  }
   const members = graph.edges
     .filter((e) => e.attribute && !!e.category === category && e.target === node.id)
     .map((e) => byId.get(e.source))

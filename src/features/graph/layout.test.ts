@@ -253,3 +253,36 @@ describe("attribute nodes stay far from project clusters", () => {
     expect(placeAttributeNodes(start, new Set(), new Map())).toBe(start);
   });
 });
+
+describe("circle collision", () => {
+  const settle = (nodes: SimNode[], links: Link[] = []) => runToSettle(nodes, links, { maxIterations: 600 }).nodes;
+  const dist = (a: SimNode, b: SimNode) => Math.hypot(a.x - b.x, a.y - b.y);
+
+  it("pushes overlapping circles apart until they no longer touch", () => {
+    const nodes: SimNode[] = [
+      { id: "a", x: 0, y: 0, vx: 0, vy: 0, r: 50 },
+      { id: "b", x: 10, y: 0, vx: 0, vy: 0, r: 40 },
+      { id: "c", x: 0, y: 12, vx: 0, vy: 0, r: 30 },
+    ];
+    const out = settle(nodes);
+    for (const [i, j] of [[0, 1], [0, 2], [1, 2]]) expect(dist(out[i], out[j])).toBeGreaterThanOrEqual((out[i].r ?? 0) + (out[j].r ?? 0));
+  });
+
+  it("keeps linked circles apart too (a spring cannot pull them into each other)", () => {
+    const nodes: SimNode[] = [
+      { id: "a", x: 0, y: 0, vx: 0, vy: 0, r: 45 },
+      { id: "b", x: 30, y: 0, vx: 0, vy: 0, r: 45 },
+    ];
+    const out = settle(nodes, [["a", "b", 20]]);
+    expect(dist(out[0], out[1])).toBeGreaterThanOrEqual(90);
+  });
+
+  it("does nothing special for nodes without a radius", () => {
+    const nodes: SimNode[] = [
+      { id: "a", x: 0, y: 0, vx: 0, vy: 0 },
+      { id: "b", x: 5, y: 0, vx: 0, vy: 0 },
+    ];
+    const plain = step(nodes, []);
+    expect(plain[0].x).toBeLessThan(0);
+  });
+});

@@ -11,6 +11,7 @@ import {
   fitTransform,
   maxSpeed,
   placeAttributeNodes,
+  placeCornerNodes,
   reconcile,
   runToSettle,
   step,
@@ -25,9 +26,11 @@ const DEFAULT_SIZE = { w: 800, h: 560 };
 const DRAG_THRESHOLD = 3;
 /** Memory -> value springs are weak so the far-away attribute nodes do not drag memories out of their project clusters. */
 const MEMORY_VALUE_SPRING = 0.2;
-/** Project hub -> organization hub: a solid spring that keeps each organization's projects (and their memories) clustered around it. */
-const ORGANIZATION_GAP = 110;
-const FIT_PADDING = 56;
+/** Collection node -> organization hub: a solid spring that keeps each organization's collections clustered around it. */
+const ORGANIZATION_GAP = 300;
+/** Collection node -> project hub: the collection sits this far outside the hub circle. */
+const PROJECT_LINK_GAP = 70;
+const FIT_PADDING = 110;
 const FIT_EASE = "transform 280ms ease-out";
 
 export interface FocusRequest {
@@ -86,8 +89,10 @@ function computeLayout(prev: SimNode[], nodes: GraphNode[], edges: GraphEdge[], 
         ? [e.source, e.target, radiusOf(e.source) + radiusOf(e.target) + 45]
         : e.organization
           ? [e.source, e.target, radiusOf(e.source) + radiusOf(e.target) + ORGANIZATION_GAP]
+          : e.projectLink
+          ? [e.source, e.target, radiusOf(e.source) + radiusOf(e.target) + PROJECT_LINK_GAP]
           : e.category
-          ? [e.source, e.target, radiusOf(e.source) + radiusOf(e.target) + 22]
+          ? [e.source, e.target, radiusOf(e.source) + radiusOf(e.target) + 100]
           : e.attribute
             ? [e.source, e.target, undefined, MEMORY_VALUE_SPRING]
             : [e.source, e.target],
@@ -95,10 +100,16 @@ function computeLayout(prev: SimNode[], nodes: GraphNode[], edges: GraphEdge[], 
   const attrOf = new Map(nodes.filter((n) => n.attr).map((n) => [n.id, n.attrRole === "category" ? ("category" as const) : ("value" as const)]));
   const categoryOf = new Map(edges.filter((e) => e.category).map((e) => [e.source, e.target]));
   const prevIds = new Set(prev.map((n) => n.id));
-  const placed = placeAttributeNodes(
-    reconcile(prev, ids, links, SEED).map((n) => (attrOf.has(n.id) ? { ...n, attr: attrOf.get(n.id) } : { ...n, attr: undefined })),
+  const cornerOf = new Map<string, "tl" | "tr">(
+    nodes.flatMap((n): [string, "tl" | "tr"][] => (n.organization ? [[n.id, "tl"]] : n.attr === "collection" && n.attrRole === "category" ? [[n.id, "tr"]] : [])),
+  );
+  const placed = placeCornerNodes(
+    placeAttributeNodes(
+      reconcile(prev, ids, links, SEED).map((n) => ({ ...n, attr: attrOf.get(n.id), corner: cornerOf.get(n.id), r: radiusOf(n.id) })),
+      prevIds,
+      categoryOf,
+    ),
     prevIds,
-    categoryOf,
   );
   if (reduced) return { key: topologyKey(nodes, edges), nodes: runToSettle(placed, links).nodes, links, alpha: 0 };
   return { key: topologyKey(nodes, edges), nodes: placed, links, alpha: ids.length > 0 ? 1 : 0 };
@@ -127,6 +138,8 @@ export function GraphCanvas({
     () => accentsProp ?? assignProjectAccents(nodes.flatMap((n) => (n.project === null ? [] : [n.project]))),
     [accentsProp, nodes],
   );
+  // Organizations get their own hue (assigned among organizations only, stable by id), so an organization reads differently from its projects.
+  const orgAccents = useMemo(() => assignProjectAccents(nodes.filter((n) => n.organization).map((n) => n.id)), [nodes]);
   const wrapRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const [size, setSize] = useState(DEFAULT_SIZE);
@@ -393,9 +406,10 @@ export function GraphCanvas({
                     y2={y2}
                     stroke="var(--color-fg-subtle, #7c8aa0)"
                     data-category-edge={e.category || undefined}
-                    strokeOpacity={dimAttr ? 0.08 : e.category ? 0.7 : 0.35}
-                    strokeWidth={e.category ? 1.5 : 1}
-                    strokeDasharray={e.category ? undefined : "1.5 3.5"}
+                    data-project-link={e.projectLink || undefined}
+                    strokeOpacity={dimAttr ? 0.08 : e.category || e.projectLink ? 0.7 : 0.35}
+                    strokeWidth={e.category || e.projectLink ? 1.5 : 1}
+                    strokeDasharray={e.category || e.projectLink ? undefined : "1.5 3.5"}
                     strokeLinecap="round"
                     pointerEvents="none"
                     aria-hidden="true"
@@ -472,8 +486,10 @@ export function GraphCanvas({
               const isLinkSource = n.id === linkSourceId;
               const highlighted = !!highlightIds?.has(n.id);
               const dim = emphasisIds ? !emphasisIds.has(n.id) : false;
-              const accent = n.project === null ? undefined : accents.get(n.project);
+              const accent = n.organization ? orgAccents.get(n.id) : n.project === null ? undefined : accents.get(n.project);
               const color = accent ? accentFill(accent.shade) : NEUTRAL;
+              // Big circles (organizations, collections, and category hubs that are big enough) carry their label inside.
+              const inside = (n.organization || n.attr === "collection" || n.attrRole === "category") && r >= 28;
               const project = n.isProject ? `project with ${n.childCount} ${n.childCount === 1 ? "memory" : "memories"}, ` : "";
               const relations = `${n.degree} ${n.degree === 1 ? "relation" : "relations"}`;
               const label = n.organization
@@ -519,22 +535,33 @@ export function GraphCanvas({
                   )}
                   {n.organization && (
                     <>
-                      <circle r={r} fill={NEUTRAL} fillOpacity={0.18} stroke="var(--color-fg-muted, #94a3b8)" strokeWidth={3} />
-                      <circle r={r - 6} fill="none" stroke="var(--color-fg-muted, #94a3b8)" strokeWidth={1} strokeOpacity={0.8} />
+                      <circle r={r} fill={color} fillOpacity={0.14} stroke={color} strokeWidth={3} data-organization-ring="true" />
+                      <circle r={r - 7} fill="none" stroke={color} strokeWidth={1.5} strokeOpacity={0.8} />
                     </>
                   )}
                   {n.attr && n.attrRole === "category" && (
-                    <circle
-                      r={r}
-                      fill={NEUTRAL}
-                      fillOpacity={0.12}
-                      stroke={NEUTRAL}
-                      strokeWidth={2}
-                      strokeDasharray={ATTRIBUTE_DASH[n.attr]}
-                      strokeLinecap="round"
-                    />
+                    <>
+                      <circle
+                        r={r}
+                        fill={NEUTRAL}
+                        fillOpacity={n.attr === "collection" ? 0.16 : 0.12}
+                        stroke={NEUTRAL}
+                        strokeWidth={2}
+                        strokeDasharray={ATTRIBUTE_DASH[n.attr]}
+                        strokeLinecap="round"
+                      />
+                      {n.attr === "collection" && (
+                        <circle r={r - 6} fill="none" stroke={NEUTRAL} strokeWidth={1} strokeOpacity={0.7} data-collection-inner-ring="true" />
+                      )}
+                    </>
                   )}
-                  {n.attr && n.attrRole !== "category" && (
+                  {n.attr && n.attrRole !== "category" && n.attr === "collection" && (
+                    <>
+                      <circle r={r} fill={color} fillOpacity={0.22} stroke={color} strokeWidth={3} data-collection-ring="true" />
+                      <circle r={r - 7} fill="none" stroke={color} strokeWidth={1.5} strokeDasharray="5 4" strokeOpacity={0.85} />
+                    </>
+                  )}
+                  {n.attr && n.attrRole !== "category" && n.attr !== "collection" && (
                     <circle r={r} fill={NEUTRAL} fillOpacity={0.55} stroke={NEUTRAL} strokeWidth={1} />
                   )}
                   {highlighted && <circle r={r + 5} fill="none" stroke={AMBER} strokeWidth={1.5} strokeDasharray="2 3" />}
@@ -550,25 +577,49 @@ export function GraphCanvas({
                     strokeWidth={n.virtual ? 2 : n.archived ? 1.5 : 1}
                     strokeDasharray={n.virtual ? "6 4" : n.archived ? "3 2" : undefined}
                   />}
-                  {(current.k >= 0.5 || selected || n.isProject || n.organization || n.attrRole === "category") && (
-                    <text
-                      y={r + 13}
-                      textAnchor="middle"
-                      fontSize={n.isProject || n.organization || n.attrRole === "category" ? 13 : n.attr ? 10 : 11}
-                      fontWeight={n.isProject || n.organization || n.attrRole === "category" ? 600 : undefined}
-                      fill="var(--color-fg, #f1f5f9)"
-                      stroke="var(--color-surface-raised, #111a2b)"
-                      strokeWidth={3}
-                      paintOrder="stroke"
-                      pointerEvents="none"
-                    >
-                      {n.organization
-                        ? `${n.title} · ${n.degree} ${n.degree === 1 ? "project" : "projects"}`
-                        : n.attrRole === "category"
-                          ? `${n.title} · ${n.degree}`
-                          : truncate(n.title)}
-                    </text>
-                  )}
+                  {(current.k >= 0.5 || selected || n.isProject || n.organization || n.attrRole === "category" || n.attr === "collection") &&
+                    (inside ? (
+                      <text
+                        textAnchor="middle"
+                        fontSize={r < 40 ? 11 : 13}
+                        fontWeight={600}
+                        fill="var(--color-fg, #f1f5f9)"
+                        stroke="var(--color-surface-raised, #111a2b)"
+                        strokeWidth={3}
+                        paintOrder="stroke"
+                        pointerEvents="none"
+                        data-label-inside="true"
+                      >
+                        <tspan x={0} y={-2}>
+                          {truncate(n.title, Math.max(4, Math.floor((2 * r - 14) / (r < 40 ? 6.5 : 7.5))))}
+                        </tspan>
+                        <tspan x={0} dy={r < 40 ? 13 : 15} fontSize={10} fontWeight={400}>
+                          {n.organization
+                            ? `${n.degree} ${n.degree === 1 ? "project" : "projects"}`
+                            : n.attrRole === "category"
+                              ? `${n.degree} ${n.degree === 1 ? "value" : "values"}`
+                              : `${n.degree} ${n.degree === 1 ? "memory" : "memories"}`}
+                        </tspan>
+                      </text>
+                    ) : (
+                      <text
+                        y={r + 13}
+                        textAnchor="middle"
+                        fontSize={n.isProject || n.organization || n.attrRole === "category" || n.attr === "collection" ? 13 : n.attr ? 10 : 11}
+                        fontWeight={n.isProject || n.organization || n.attrRole === "category" || n.attr === "collection" ? 600 : undefined}
+                        fill="var(--color-fg, #f1f5f9)"
+                        stroke="var(--color-surface-raised, #111a2b)"
+                        strokeWidth={3}
+                        paintOrder="stroke"
+                        pointerEvents="none"
+                      >
+                        {n.organization
+                          ? `${n.title} · ${n.degree} ${n.degree === 1 ? "project" : "projects"}`
+                          : n.attrRole === "category"
+                            ? `${n.title} · ${n.degree}`
+                            : truncate(n.title)}
+                      </text>
+                    ))}
                 </g>
               );
             })}

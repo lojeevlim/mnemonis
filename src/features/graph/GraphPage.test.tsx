@@ -555,14 +555,19 @@ describe("Graph: category hubs and value nodes", () => {
     expect(hubs.map((h) => h.getAttribute("data-node-id"))).toEqual(["category:collection"]);
     expect(values.length).toBeGreaterThan(0);
     expect(hubs[0]).toHaveAttribute("aria-label", expect.stringMatching(/^Collections, \d+ values?$/));
-    expect(hubs[0].textContent).toMatch(/^Collections · \d+$/);
+    // big circle: the label sits inside it (name, then the count)
+    expect(hubs[0].textContent).toMatch(/^Collections\d+ values?$/);
+    expect(hubs[0].querySelector("[data-label-inside]")).toBeInTheDocument();
+    for (const v of values) expect(v.querySelector("[data-label-inside]")).toBeInTheDocument();
     const projectHub = container.querySelector<SVGGElement>("[data-virtual][data-node-id^='project:']")!;
     expect(radius(hubs[0])).toBeGreaterThan(radius(projectHub));
     const smallestMemory = Math.min(...nodeEls(container).filter((n) => !n.hasAttribute("data-attribute")).map(radius));
-    for (const v of values) expect(radius(v)).toBeLessThan(smallestMemory);
+    // a collection node is as big as an organization hub (so smaller than its Collections hub), unlike tag / type / status nodes
+    for (const v of values) expect(radius(v)).toBeGreaterThan(smallestMemory);
+    for (const v of values) expect(radius(v)).toBeLessThan(radius(hubs[0]));
     // value -> category edges (solid) and memory -> value links (dotted).
     expect(container.querySelectorAll("[data-attr-edge^=\"cat:collection:\"][data-category-edge]")).toHaveLength(values.length);
-    const memoryLinks = [...container.querySelectorAll("[data-attr-edge]:not([data-category-edge])")];
+    const memoryLinks = [...container.querySelectorAll("[data-attr-edge]:not([data-category-edge]):not([data-project-link])")];
     expect(memoryLinks.length).toBeGreaterThan(0);
     expect(memoryLinks[0]).toHaveAttribute("stroke-dasharray");
     expect(container.querySelector("[data-attr-edge][data-category-edge]")).not.toHaveAttribute("stroke-dasharray");
@@ -654,22 +659,24 @@ describe("Graph: organization hubs", () => {
     expect(orgEls(container).map((e) => e.getAttribute("data-node-id")).sort()).toEqual([`org:${personal.id}`, `org:${rok.id}`].sort());
     const hub = nodeEl(container, `org:${rok.id}`);
     expect(hub).toHaveAttribute("aria-label", "ROK, organization with 1 project");
-    expect(hub.textContent).toBe("ROK · 1 project");
+    expect(hub.textContent).toBe("ROK1 project");
+    expect(hub.querySelector("[data-label-inside]")).toBeInTheDocument();
     expect(radius(hub)).toBeGreaterThan(radius(nodeEl(container, `project:${vt}`)));
-    // neutral: no project colour, and not an attribute node
-    expect(hub).not.toHaveAttribute("data-accent");
+    // coloured with its own hue (not a project's), and not an attribute node
+    expect(hub).toHaveAttribute("data-accent");
+    expect(hub.querySelector("[data-organization-ring]")).toBeInTheDocument();
     expect(hub).not.toHaveAttribute("data-attribute");
     expect(container.querySelector("[data-legend-organization]")).toBeInTheDocument();
   });
 
-  it("links each project hub to its organization hub; projects without an organization stay unlinked", async () => {
-    const { rok, vt, mnemo } = await mk();
+  it("links each organization hub only to the collection nodes of its projects; never to project hubs or memories", async () => {
+    const { rok } = await mk();
     const { container } = renderPage();
-    const links = [...container.querySelectorAll("[data-organization-edge]")].map((e) => e.getAttribute("data-organization-edge")).sort();
+    const links = [...container.querySelectorAll("[data-organization-edge]")].map((e) => e.getAttribute("data-organization-edge")!).sort();
     expect(links).toHaveLength(2);
-    expect(links).toContain(`org:${rok.id}:project:${vt}`);
-    expect(links.some((l) => l!.endsWith(`:project:${mnemo}`))).toBe(true);
-    expect(links.some((l) => l!.includes("loose"))).toBe(false);
+    expect(links.every((l) => l.includes(":collection:"))).toBe(true);
+    expect(links.some((l) => l.startsWith(`org:${rok.id}:collection:`))).toBe(true);
+    expect(links.some((l) => l.includes(":project:") || l.includes("mem_") || l.includes("loose"))).toBe(false);
     // a decorative line, not a selectable relation
     expect(container.querySelector("[data-edge-id^='org:']")).toBeNull();
   });

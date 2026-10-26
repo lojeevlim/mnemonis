@@ -346,7 +346,9 @@ export function GraphSidePanel({
                 <circle r="8" fill={NEUTRAL} fillOpacity="0.12" stroke={NEUTRAL} strokeWidth="1.5" strokeDasharray={ATTRIBUTE_DASH[k]} />
                 <circle r="2.5" fill={NEUTRAL} fillOpacity="0.55" stroke={NEUTRAL} strokeWidth="1" />
               </svg>
-              Big circle: {KIND_LEGEND[k]}, one small dot per value (dotted line to its memories)
+              {k === "collection"
+                ? `Big circle: ${KIND_LEGEND[k]}, one circle per collection (solid line to its projects)`
+                : `Big circle: ${KIND_LEGEND[k]}, one small dot per value (dotted line to its memories)`}
             </li>
           ))}
           {organizationCount > 0 && (
@@ -355,7 +357,7 @@ export function GraphSidePanel({
                 <circle r="9" fill={NEUTRAL} fillOpacity="0.18" stroke="var(--color-fg-muted)" strokeWidth="2" />
                 <circle r="6" fill="none" stroke="var(--color-fg-muted)" strokeWidth="1" />
               </svg>
-              Largest circle: an organization, linked (solid line) to the projects it contains.
+              Largest circle: an organization, linked (solid line) to the collections of the projects it contains.
             </li>
           )}
           <li>Node size grows with the number of relations.</li>
